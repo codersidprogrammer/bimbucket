@@ -1,0 +1,17 @@
+# Local secrets
+.env
+
+# Migration artifacts
+logs/
+migration-state.json
+staging/
+
+# Build output
+/bimbucket
+/bbmigrate
+/bin/
+/dist/
+
+# Go
+*.test
+*.out
