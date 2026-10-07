@@ -75,6 +75,31 @@ func (c *Config) ProjectByKey(key string) (Project, bool) {
 	return Project{}, false
 }
 
+// SetOverride updates the in-memory override for repoSlug within projectKey,
+// replacing any existing entry. An empty destination and targetSlug removes it.
+// It mirrors SetRepoOverride so the running config stays in sync with the file.
+func (c *Config) SetOverride(projectKey, repoSlug, destination, targetSlug string) {
+	for i := range c.Projects {
+		p := &c.Projects[i]
+		if p.Key != projectKey {
+			continue
+		}
+		kept := p.Overrides[:0]
+		for _, ov := range p.Overrides {
+			if ov.Repo != repoSlug {
+				kept = append(kept, ov)
+			}
+		}
+		p.Overrides = kept
+		if destination != "" || targetSlug != "" {
+			p.Overrides = append(p.Overrides, RepoOverride{
+				Repo: repoSlug, Destination: destination, TargetSlug: targetSlug,
+			})
+		}
+		return
+	}
+}
+
 const (
 	OnErrorContinue = "continue"
 	OnErrorStop     = "stop"

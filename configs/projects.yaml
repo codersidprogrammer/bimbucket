@@ -1,9 +1,7 @@
 source:
   base_url: https://bitbucket.gmf-aeroasia.co.id
-
 target:
   workspace: gmf-aeroasia
-
 # Each project is expanded to its repositories. An empty repos list means
 # "all repositories in the project". Listing a repo explicitly restricts it.
 #
@@ -16,17 +14,22 @@ projects:
     overrides:
       - repo: microservice-soev2
         destination: MICROSERVICE
-      # - repo: xopsapi
-      #   destination: XOPS       # explicit, same as the project default
-      # - repo: legacy-api
-      #   target_slug: api-v2     # rename the Cloud repository only
+        # - repo: xopsapi
+        #   destination: XOPS       # explicit, same as the project default
+        # - repo: legacy-api
+        #   target_slug: api-v2     # rename the Cloud repository only
+      - repo: microservice-eureka
+        destination: MICROSERVICE
+        target_slug: microservice-eureka
+      - repo: microservice-gateway
+        destination: MICROSERVICE
+        target_slug: microservice-gateway
   - key: ~johnsmith
     repos: []
-
 options:
   workers: 3
-  temp_dir: ""                # empty => OS temp dir; deleted per repository
-  on_error: continue          # continue | stop
-  on_slug_collision: fail     # only "fail" is supported
-  rollback: true              # delete Cloud repo if this run created it and it failed
+  temp_dir: "" # empty => OS temp dir; deleted per repository
+  on_error: continue # continue | stop
+  on_slug_collision: fail # only "fail" is supported
+  rollback: true # delete Cloud repo if this run created it and it failed
   create_cloud_projects: true # create a Cloud project per Server project key

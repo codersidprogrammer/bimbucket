@@ -60,8 +60,10 @@ func (m *Model) migRows() []table.Row {
 		if dest == "" {
 			dest = "-"
 		}
-		if _, ok := m.remaps[jobKey(j)]; ok {
-			dest += " *"
+		if p, ok := m.cfg.ProjectByKey(j.Project); ok {
+			if _, ok := p.OverrideFor(j.Slug); ok {
+				dest += " *"
+			}
 		}
 		rows = append(rows, table.Row{mark, j.Project, j.Slug, dest, j.TargetSlug, j.DefaultBranch})
 	}
@@ -91,9 +93,8 @@ func (m *Model) jobByKey(k string) *migrate.RepoJob {
 	return nil
 }
 
-// applyRemaps recomputes every job's destination from the config + source slug,
-// then layers the session remap overlay on top. It is idempotent, so it can be
-// re-run after a plan reload without compounding.
+// applyRemaps recomputes every job's destination from the in-memory config. It
+// is idempotent, so it can be re-run after a config change or plan reload.
 func (m *Model) applyRemaps() {
 	if m.plan == nil {
 		return
@@ -104,16 +105,7 @@ func (m *Model) applyRemaps() {
 		if !ok {
 			continue
 		}
-		cloudProject, targetSlug := migrate.ResolveJob(p, j.Slug)
-		if ov, ok := m.remaps[jobKey(*j)]; ok {
-			if ov.Destination != "" {
-				cloudProject = ov.Destination
-			}
-			if ov.TargetSlug != "" {
-				targetSlug = migrate.NormalizeSlug(ov.TargetSlug)
-			}
-		}
-		j.CloudProject, j.TargetSlug = cloudProject, targetSlug
+		j.CloudProject, j.TargetSlug = migrate.ResolveJob(p, j.Slug)
 	}
 }
 
@@ -209,9 +201,6 @@ func (m *Model) openRemap() {
 		return
 	}
 	j := m.mig.jobs[i]
-	if m.remaps == nil {
-		m.remaps = map[string]remapValue{}
-	}
 	m.mig.editing = true
 	m.mig.editKey = jobKey(j)
 	m.mig.editErr = ""
@@ -275,8 +264,10 @@ func (m *Model) handleRemapKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// commitRemap validates and applies the editor. It reverts and reports an error
-// if the remap would collide with another target slug.
+// commitRemap validates the editor, then persists the mapping into the YAML
+// config and the in-memory config (the single source of truth). It reverts and
+// reports an error if the remap would collide with another target slug or the
+// file cannot be written.
 func (m *Model) commitRemap() (tea.Model, tea.Cmd) {
 	j := m.jobByKey(m.mig.editKey)
 	if j == nil {
@@ -298,24 +289,23 @@ func (m *Model) commitRemap() (tea.Model, tea.Cmd) {
 		m.mig.editErr = "project " + j.Project + " is not in the config"
 		return m, nil
 	}
-	defCloud, defSlug := migrate.ResolveJob(p, j.Slug)
-	noop := (dest == "" || dest == defCloud) && (slug == "" || slug == defSlug)
+	prev, had := p.OverrideFor(j.Slug)
 
-	prev, had := m.remaps[m.mig.editKey]
-	if noop {
-		delete(m.remaps, m.mig.editKey)
-	} else {
-		m.remaps[m.mig.editKey] = remapValue{Destination: dest, TargetSlug: slug}
-	}
+	// Apply in memory first and reject a mapping that collides with another
+	// target slug before touching the file.
+	m.cfg.SetOverride(j.Project, j.Slug, dest, slug)
 	m.applyRemaps()
 	if cerr := migrate.CheckCollisions(m.plan.Jobs); cerr != nil {
-		if had {
-			m.remaps[m.mig.editKey] = prev
-		} else {
-			delete(m.remaps, m.mig.editKey)
-		}
+		m.restoreOverride(j.Project, j.Slug, prev, had)
 		m.applyRemaps()
 		m.mig.editErr = cerr.Error()
+		return m, nil
+	}
+
+	if err := config.SetRepoOverride(m.configPath, j.Project, j.Slug, dest, slug); err != nil {
+		m.restoreOverride(j.Project, j.Slug, prev, had)
+		m.applyRemaps()
+		m.mig.editErr = err.Error()
 		return m, nil
 	}
 
@@ -323,8 +313,17 @@ func (m *Model) commitRemap() (tea.Model, tea.Cmd) {
 	m.rebuildMigTable()
 	m.rebuildProjects()
 	m.rebuildStatus()
+	m.rebuildConfig()
 	m.destExists = nil
 	return m, m.checkDestinationsCmd()
+}
+
+func (m *Model) restoreOverride(projectKey, repoSlug string, prev config.RepoOverride, had bool) {
+	if had {
+		m.cfg.SetOverride(projectKey, repoSlug, prev.Destination, prev.TargetSlug)
+		return
+	}
+	m.cfg.SetOverride(projectKey, repoSlug, "", "")
 }
 
 func (m *Model) remapPanel() string {

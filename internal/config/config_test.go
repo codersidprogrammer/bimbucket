@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -203,5 +204,52 @@ func TestRepoOverrideInvalidDestinationRejected(t *testing.T) {
 
 	if _, err := Load(cfgPath); err == nil {
 		t.Fatal("expected error for invalid override destination")
+	}
+}
+
+func TestSetRepoOverrideRoundTrip(t *testing.T) {
+	isolateEnv(t)
+	path := filepath.Join(t.TempDir(), "projects.yaml")
+	raw := "# top comment\n" +
+		"source:\n  base_url: https://bb.example.com\n" +
+		"projects:\n  - key: XOPS\n    repos: []\n  - key: ABC\n    repos: []\n" +
+		"options:\n  workers: 2\n"
+	must(t, os.WriteFile(path, []byte(raw), 0o600))
+
+	if err := SetRepoOverride(path, "XOPS", "microservice-soev2", "MICROSERVICE", ""); err != nil {
+		t.Fatalf("SetRepoOverride: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	must(t, err)
+	if !strings.Contains(string(got), "# top comment") {
+		t.Errorf("comment lost:\n%s", got)
+	}
+	if !strings.Contains(string(got), "repo: microservice-soev2") || !strings.Contains(string(got), "destination: MICROSERVICE") {
+		t.Errorf("override missing:\n%s", got)
+	}
+
+	t.Setenv("BITBUCKET_SERVER_TOKEN", "tok")
+	t.Setenv("BITBUCKET_CLOUD_EMAIL", "e@example.com")
+	t.Setenv("BITBUCKET_CLOUD_API_TOKEN", "api")
+	t.Setenv("BITBUCKET_CLOUD_WORKSPACE", "ws")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load after write: %v", err)
+	}
+	ov, ok := cfg.Projects[0].OverrideFor("microservice-soev2")
+	if !ok || ov.Destination != "MICROSERVICE" {
+		t.Errorf("reloaded override = %+v, ok=%v", ov, ok)
+	}
+
+	if err := SetRepoOverride(path, "XOPS", "microservice-soev2", "", ""); err != nil {
+		t.Fatalf("SetRepoOverride remove: %v", err)
+	}
+	got, err = os.ReadFile(path)
+	must(t, err)
+	if strings.Contains(string(got), "microservice-soev2") {
+		t.Errorf("override not removed:\n%s", got)
+	}
+	if strings.Contains(string(got), "overrides:") {
+		t.Errorf("empty overrides list left behind:\n%s", got)
 	}
 }

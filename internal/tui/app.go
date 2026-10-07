@@ -38,13 +38,14 @@ const viewCount = int(viewAbout) + 1
 // Options are the dependencies the menu TUI needs. The plan is built lazily so
 // the UI can still open (and report failures) when the source is unreachable.
 type Options struct {
-	Config    *config.Config
-	Source    *source.Client
-	Target    *target.Client
-	Git       migrate.GitOps
-	StatePath string
-	LogDir    string
-	DryRun    bool
+	Config     *config.Config
+	ConfigPath string
+	Source     *source.Client
+	Target     *target.Client
+	Git        migrate.GitOps
+	StatePath  string
+	LogDir     string
+	DryRun     bool
 }
 
 type (
@@ -81,14 +82,6 @@ type (
 	eventMsg migrate.Event
 	doneMsg  struct{ err error }
 )
-
-// remapValue is a session-scoped per-repo remap layered on top of the plan. An
-// empty Destination inherits the project destination; an empty TargetSlug keeps
-// the normalized source slug.
-type remapValue struct {
-	Destination string
-	TargetSlug  string
-}
 
 // migState holds the interactive migration flow, which is one menu tab.
 type migState struct {
@@ -138,10 +131,11 @@ type Model struct {
 	tgt *target.Client
 	gr  migrate.GitOps
 
-	state     *migrate.State
-	statePath string
-	logDir    string
-	dryRun    bool
+	state      *migrate.State
+	statePath  string
+	logDir     string
+	dryRun     bool
+	configPath string
 
 	plan        *migrate.Plan
 	planErr     error
@@ -177,8 +171,6 @@ type Model struct {
 	histEvents  []migrate.Event
 	eventsTable table.Model
 
-	remaps map[string]remapValue
-
 	mig migState
 }
 
@@ -205,10 +197,10 @@ func Run(opts Options) error {
 		statePath:  opts.StatePath,
 		logDir:     opts.LogDir,
 		dryRun:     opts.DryRun,
+		configPath: opts.ConfigPath,
 		state:      migrate.LoadState(opts.StatePath),
 		spinner:    sp,
 		projFilter: filter,
-		remaps:     map[string]remapValue{},
 		mig:        migState{selected: map[string]bool{}, filter: migFilter},
 	}
 	m.rebuildConfig()

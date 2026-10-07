@@ -165,10 +165,12 @@ project lists `repos:`) the overridden repo must be one of them. Cloud repositor
 slugs remain unique per workspace, so an override that collides with another
 target slug fails the plan.
 
-You can also re-map for the current session from the TUI: open the **Migrate**
-view, highlight a repository, and press `e`. Remapped rows are marked with `*` in
-the **Dest** column. The editor is session-only — it does not write back to the
-YAML file; edit `overrides:` in the config to make a mapping permanent.
+You can also re-map from the TUI: open the **Migrate** view, highlight a
+repository, and press `e`. Edit the destination project and/or target slug and
+press `enter`. Remapped rows are marked with `*` in the **Dest** column. The edit
+is written straight back into `projects.yaml` (`overrides:`), preserving the
+file's comments, so the YAML stays the single source of truth. Clearing both
+fields removes the override.
 
 ## Usage
 

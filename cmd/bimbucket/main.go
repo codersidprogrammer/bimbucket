@@ -73,13 +73,14 @@ func main() {
 	// The TUI builds the plan lazily so it can still open and report a source
 	// connection failure via the Connection view.
 	if err := tui.Run(tui.Options{
-		Config:    cfg,
-		Source:    src,
-		Target:    tgt,
-		Git:       gr,
-		StatePath: *statePath,
-		LogDir:    *logDir,
-		DryRun:    *dryRun,
+		Config:     cfg,
+		ConfigPath: *configPath,
+		Source:     src,
+		Target:     tgt,
+		Git:        gr,
+		StatePath:  *statePath,
+		LogDir:     *logDir,
+		DryRun:     *dryRun,
 	}); err != nil {
 		fatal(err)
 	}

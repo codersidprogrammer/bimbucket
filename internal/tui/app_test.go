@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -205,14 +206,23 @@ func testInput(value string) textinput.Model {
 
 func remapModel(t *testing.T, cfg *config.Config, jobs ...migrate.RepoJob) *Model {
 	t.Helper()
+	path := filepath.Join(t.TempDir(), "projects.yaml")
+	var b strings.Builder
+	b.WriteString("source:\n  base_url: https://bb.example.com\nprojects:\n")
+	for _, p := range cfg.Projects {
+		b.WriteString("  - key: " + p.Key + "\n")
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	m := &Model{
 		cfg:        cfg,
+		configPath: path,
 		state:      migrate.LoadState(filepath.Join(t.TempDir(), "state.json")),
 		projFilter: textinput.New(),
 		spinner:    spinner.New(),
 		width:      120,
 		height:     40,
-		remaps:     map[string]remapValue{},
 		mig:        migState{selected: map[string]bool{}, filter: textinput.New()},
 	}
 	m.plan = &migrate.Plan{Jobs: jobs}
@@ -248,6 +258,12 @@ func TestRemapCommitAppliesAndInherits(t *testing.T) {
 	if got := m.plan.Jobs[0].TargetSlug; got != "microservice-soev2" {
 		t.Errorf("target slug = %q, want source slug", got)
 	}
+	if ov, ok := m.cfg.Projects[0].OverrideFor("microservice-soev2"); !ok || ov.Destination != "MICROSERVICE" {
+		t.Errorf("in-memory override = %+v, ok=%v", ov, ok)
+	}
+	if data, _ := os.ReadFile(m.configPath); !strings.Contains(string(data), "destination: MICROSERVICE") {
+		t.Errorf("persisted config missing override:\n%s", data)
+	}
 
 	// Rename the target slug; empty destination inherits the project default.
 	m.mig.editKey = "XOPS/microservice-soev2"
@@ -259,6 +275,9 @@ func TestRemapCommitAppliesAndInherits(t *testing.T) {
 	}
 	if got := m.plan.Jobs[0].CloudProject; got != "XOPS" {
 		t.Errorf("cloud project = %q, want XOPS (inherited)", got)
+	}
+	if data, _ := os.ReadFile(m.configPath); !strings.Contains(string(data), "target_slug: api-v2") {
+		t.Errorf("persisted config missing target_slug:\n%s", data)
 	}
 }
 
@@ -279,8 +298,11 @@ func TestRemapCollisionBlocked(t *testing.T) {
 	if got := m.plan.Jobs[1]; got.TargetSlug != "b" || got.CloudProject != "ABC" {
 		t.Errorf("plan must be unchanged on collision, got %+v", got)
 	}
-	if _, ok := m.remaps["ABC/b"]; ok {
-		t.Error("colliding remap must not be stored")
+	if _, ok := m.cfg.Projects[1].OverrideFor("b"); ok {
+		t.Error("colliding remap must not be applied in memory")
+	}
+	if data, _ := os.ReadFile(m.configPath); strings.Contains(string(data), "repo: b") {
+		t.Errorf("colliding remap must not be persisted:\n%s", data)
 	}
 }
 
