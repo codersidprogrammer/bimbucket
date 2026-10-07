@@ -16,3 +16,4 @@ staging/
 *.test
 *.out
 AGENTS.md
+graphify-out/*
