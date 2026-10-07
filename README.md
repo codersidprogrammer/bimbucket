@@ -71,6 +71,17 @@ BITBUCKET_CLOUD_API_TOKEN=         # scoped API token, see below
 BITBUCKET_CLOUD_WORKSPACE=your-workspace
 ```
 
+The installed binary looks for `./.env` in the **current working directory**. To
+use a `.env` elsewhere (e.g. `/etc/bimbucket/.env`), pass `-env`:
+
+```sh
+bimbucket -config /etc/bimbucket/projects.yaml -env /etc/bimbucket/.env
+```
+
+Resolution order, highest first: real shell environment variables → the `.env`
+file (`-env` path, or `./.env`) → defaults. Existing environment variables are
+never overridden.
+
 > **Cloud API tokens need Bitbucket scopes.** App passwords are removed. Create a
 > token at <https://id.atlassian.com/manage-profile/security/api-tokens> with the
 > Bitbucket app and these scopes: `read:user:bitbucket`,
@@ -125,6 +136,7 @@ bimbucket -config configs/projects.yaml -no-tui -dry-run
 | Flag | Default | Description |
 | --- | --- | --- |
 | `-config` | `configs/projects.yaml` | Path to YAML config |
+| `-env` | `./.env` if present | Path to a `.env` file with credentials |
 | `-dry-run` | `false` | Plan and report without writing to Cloud |
 | `-workers` | `0` (config) | Override worker count |
 | `-temp-dir` | OS temp | Base directory for ephemeral clones |

@@ -20,6 +20,7 @@ var version = "1.0.0"
 func main() {
 	var (
 		configPath  = flag.String("config", "configs/projects.yaml", "path to YAML config")
+		envPath     = flag.String("env", "", "path to a .env file (default: ./.env if present)")
 		dryRun      = flag.Bool("dry-run", false, "plan and report without writing to Cloud")
 		workers     = flag.Int("workers", 0, "override worker count")
 		tempDir     = flag.String("temp-dir", "", "base directory for ephemeral clones")
@@ -36,7 +37,7 @@ func main() {
 	}
 	tui.Version = version
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.LoadWithEnv(*configPath, *envPath)
 	if err != nil {
 		fatal(err)
 	}

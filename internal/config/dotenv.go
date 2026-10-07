@@ -2,17 +2,21 @@ package config
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"strings"
 )
 
-// loadDotEnv reads a .env file in the working directory if present and sets
-// any keys that are not already present in the environment. It never overrides
-// values that are already set, so real environment variables win.
-func loadDotEnv() {
-	f, err := os.Open(".env")
+// loadDotEnvAt reads a dotenv file and sets any keys that are not already
+// present in the environment, so real environment variables always win. A
+// missing file is only an error when optional is false.
+func loadDotEnvAt(path string, optional bool) error {
+	f, err := os.Open(path)
 	if err != nil {
-		return
+		if optional && os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 	defer f.Close()
 
@@ -35,6 +39,9 @@ func loadDotEnv() {
 		if _, exists := os.LookupEnv(key); exists {
 			continue
 		}
-		_ = os.Setenv(key, value)
+		if err := os.Setenv(key, value); err != nil {
+			return fmt.Errorf("set %s from %s: %w", key, path, err)
+		}
 	}
+	return sc.Err()
 }

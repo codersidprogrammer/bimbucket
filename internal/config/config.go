@@ -48,8 +48,22 @@ const (
 	OnErrorStop     = "stop"
 )
 
+// Load reads config from path and, when present, credentials from ./.env.
 func Load(path string) (*Config, error) {
-	loadDotEnv()
+	return LoadWithEnv(path, "")
+}
+
+// LoadWithEnv reads config from path. Credentials come from envPath when set (a
+// missing file is an error), otherwise from ./.env when present. Real
+// environment variables always take precedence over dotenv values.
+func LoadWithEnv(path, envPath string) (*Config, error) {
+	if envPath == "" {
+		if err := loadDotEnvAt(".env", true); err != nil {
+			return nil, fmt.Errorf("read .env: %w", err)
+		}
+	} else if err := loadDotEnvAt(envPath, false); err != nil {
+		return nil, fmt.Errorf("read env file %q: %w", envPath, err)
+	}
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
