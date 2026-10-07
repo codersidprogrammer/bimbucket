@@ -6,9 +6,20 @@ target:
 
 # Each project is expanded to its repositories. An empty repos list means
 # "all repositories in the project". Listing a repo explicitly restricts it.
+#
+# overrides re-map individual repositories to a different Cloud project and/or
+# rename the target slug. Omit destination to keep the project destination;
+# omit target_slug to keep the source slug.
 projects:
   - key: XOPS
     repos: []
+    overrides:
+      - repo: microservice-soev2
+        destination: MICROSERVICE
+      # - repo: xopsapi
+      #   destination: XOPS       # explicit, same as the project default
+      # - repo: legacy-api
+      #   target_slug: api-v2     # rename the Cloud repository only
   - key: ~johnsmith
     repos: []
 

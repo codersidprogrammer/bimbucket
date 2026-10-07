@@ -13,17 +13,21 @@ import (
 )
 
 type fakeTarget struct {
-	exists       map[string]bool
-	created      []string
-	deleted      []string
-	projects     []string
-	mainBranches map[string]string
+	exists        map[string]bool
+	projectExists map[string]bool
+	created       []string
+	deleted       []string
+	projects      []string
+	mainBranches  map[string]string
 }
 
 func (f *fakeTarget) Workspace() string          { return "ws" }
 func (f *fakeTarget) RepoURL(slug string) string { return "https://cloud.example/ws/" + slug }
 func (f *fakeTarget) RepoExists(_ context.Context, slug string) (bool, error) {
 	return f.exists[slug], nil
+}
+func (f *fakeTarget) ProjectExists(_ context.Context, key string) (bool, error) {
+	return f.projectExists[key], nil
 }
 func (f *fakeTarget) CreateProject(_ context.Context, key, _ string) error {
 	f.projects = append(f.projects, key)
@@ -166,5 +170,39 @@ func TestDryRunWritesNothing(t *testing.T) {
 	}
 	if rec := state.Get("XOPS", "svc"); rec.Status != StatusSkipped {
 		t.Errorf("status = %s, want skipped", rec.Status)
+	}
+}
+
+func TestRunReusesExistingProjectWithoutCreating(t *testing.T) {
+	tgt := &fakeTarget{exists: map[string]bool{}, projectExists: map[string]bool{"XOPS": true}}
+	state, err := runOne(t, tgt, &fakeGit{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(tgt.projects) != 0 {
+		t.Errorf("must not create an existing project, got %v", tgt.projects)
+	}
+	if rec := state.Get("XOPS", "svc"); rec.Status != StatusDone {
+		t.Errorf("status = %s, want done", rec.Status)
+	}
+}
+
+func TestRunMissingProjectWithoutCreateFails(t *testing.T) {
+	cfg := &config.Config{Options: config.Options{Workers: 1, OnError: config.OnErrorContinue, CreateCloudProjects: false}}
+	plan := &Plan{Jobs: []RepoJob{{Project: "XOPS", Slug: "svc", TargetSlug: "svc", CloudProject: "XOPS"}}}
+	state := LoadState(filepath.Join(t.TempDir(), "state.json"))
+	log, _ := NewLogger(t.TempDir(), "test", nil)
+	defer log.Close()
+
+	tgt := &fakeTarget{exists: map[string]bool{}, projectExists: map[string]bool{}}
+	runner := NewRunner(cfg, plan, tgt, &fakeGit{}, state, log, false)
+	if err := runner.Run(context.Background()); err == nil {
+		t.Fatal("expected error for missing project without create_cloud_projects")
+	}
+	if len(tgt.created) != 0 {
+		t.Errorf("must not create repos when project is missing: %v", tgt.created)
+	}
+	if rec := state.Get("XOPS", "svc"); rec.Status != StatusFailed {
+		t.Errorf("status = %s, want failed", rec.Status)
 	}
 }

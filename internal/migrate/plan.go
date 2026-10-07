@@ -55,11 +55,12 @@ func BuildPlan(ctx context.Context, cfg *config.Config, lister RepoLister) (*Pla
 			if repo.Archived && !p.IncludeArchived {
 				continue
 			}
+			cloudProject, targetSlug := ResolveJob(p, repo.Slug)
 			jobs = append(jobs, RepoJob{
 				Project:       p.Key,
 				Slug:          repo.Slug,
-				TargetSlug:    NormalizeSlug(repo.Slug),
-				CloudProject:  normalizeProjectKey(p.Key),
+				TargetSlug:    targetSlug,
+				CloudProject:  cloudProject,
 				CloneURL:      repo.CloneURL(cfg.Source.BaseURL),
 				DefaultBranch: repo.DefaultBranchName(),
 				Description:   repo.Name,
@@ -104,6 +105,38 @@ func NormalizeSlug(slug string) string {
 	}
 	return out
 }
+
+// projectDestination resolves the destination Cloud project key for a
+// configured project: an explicit destination wins, otherwise the source key is
+// normalized.
+func projectDestination(p config.Project) string {
+	if p.Destination != "" {
+		return p.Destination
+	}
+	return normalizeProjectKey(p.Key)
+}
+
+// ResolveJob resolves the destination Cloud project and target slug for a source
+// repository, honoring the project's per-repo overrides. An override with an
+// empty destination (or target_slug) inherits the project destination (or the
+// normalized source slug).
+func ResolveJob(p config.Project, sourceSlug string) (cloudProject, targetSlug string) {
+	cloudProject = projectDestination(p)
+	targetSlug = NormalizeSlug(sourceSlug)
+	if ov, ok := p.OverrideFor(sourceSlug); ok {
+		if ov.Destination != "" {
+			cloudProject = ov.Destination
+		}
+		if ov.TargetSlug != "" {
+			targetSlug = NormalizeSlug(ov.TargetSlug)
+		}
+	}
+	return cloudProject, targetSlug
+}
+
+// CheckCollisions reports a workspace-wide target slug collision across jobs.
+// The TUI calls it after applying an in-session remap.
+func CheckCollisions(jobs []RepoJob) error { return detectCollisions(jobs) }
 
 // normalizeProjectKey upper-cases a Server project key and strips a leading
 // tilde used for personal projects, which Cloud project keys do not allow.

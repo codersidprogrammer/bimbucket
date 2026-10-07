@@ -100,9 +100,15 @@ target:
   workspace: your-workspace
 
 projects:
-  - key: XOPS        # empty repos list = all repositories in the project
+  - key: XOPS            # empty repos list = all repositories in the project
+    destination: XOPS    # optional Cloud project key; default = normalized source key
     repos: []
-  - key: ~johnsmith
+    overrides:           # optional per-repository re-mapping
+      - repo: microservice-soev2
+        destination: MICROSERVICE   # send this repo to a different Cloud project
+      # - repo: legacy-api
+      #   target_slug: api-v2       # and/or rename the Cloud repository slug
+  - key: ~johnsmith      # maps to Cloud project JOHNSMITH by default
     repos: []
 
 options:
@@ -112,6 +118,57 @@ options:
   rollback: true              # delete a Cloud repo if this run created it and it failed
   create_cloud_projects: true
 ```
+
+### Project mapping
+
+By default each Server project maps to a Cloud project with the same normalized
+key (`XOPS` → `XOPS`, `~johnsmith` → `JOHNSMITH`). Set `destination:` on a project
+to send it somewhere else; multiple source projects may share one destination.
+
+bimbucket always checks whether the destination project exists before migrating:
+
+- exists → reused;
+- missing and `create_cloud_projects: true` → created automatically;
+- missing and `create_cloud_projects: false` → the affected repositories fail with
+  `destination project "X" does not exist and create_cloud_projects is false`.
+
+The TUI's **Projects** view shows the destination for each repository and whether
+it already exists (`(ok)` / `(new)` / `(missing)`).
+
+### Repository mapping
+
+A project's `overrides:` list re-maps individual repositories. Each entry keys on
+the source repo slug (`repo`) and may set:
+
+- `destination:` — a Cloud project key for this repository only (default: the
+  project's `destination`, or the normalized source key). Omit to inherit.
+- `target_slug:` — a different Cloud repository slug (default: the normalized
+  source slug). Omit to keep the source slug. The value is normalized like a
+  source slug (lower-case; only `[a-z0-9._-]`).
+
+```yaml
+projects:
+  - key: XOPS
+    repos: []
+    overrides:
+      - repo: xopsapi              # stays in XOPS (no override needed)
+      - repo: microservice-soev2
+        destination: MICROSERVICE  # XOPS/microservice-soev2 -> MICROSERVICE/microservice-soev2
+      - repo: legacy-api
+        destination: MICROSERVICE
+        target_slug: api-v2        # ...-> MICROSERVICE/api-v2
+```
+
+Overrides are validated at load time: `repo` must be non-empty and unique within
+the project, `destination` must be a valid Cloud project key, and (when the
+project lists `repos:`) the overridden repo must be one of them. Cloud repository
+slugs remain unique per workspace, so an override that collides with another
+target slug fails the plan.
+
+You can also re-map for the current session from the TUI: open the **Migrate**
+view, highlight a repository, and press `e`. Remapped rows are marked with `*` in
+the **Dest** column. The editor is session-only — it does not write back to the
+YAML file; edit `overrides:` in the config to make a mapping permanent.
 
 ## Usage
 

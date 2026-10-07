@@ -17,6 +17,7 @@ type TargetClient interface {
 	Workspace() string
 	RepoURL(slug string) string
 	RepoExists(ctx context.Context, slug string) (bool, error)
+	ProjectExists(ctx context.Context, key string) (bool, error)
 	CreateProject(ctx context.Context, key, name string) error
 	CreateRepo(ctx context.Context, req target.CreateRepoRequest) error
 	SetMainBranch(ctx context.Context, slug, branch string) error
@@ -42,20 +43,22 @@ type Runner struct {
 	log    *Logger
 	dryRun bool
 
-	projectsMu    sync.Mutex
-	projectsReady map[string]bool
+	projectsMu     sync.Mutex
+	projectsReady  map[string]bool
+	projectsFailed map[string]error
 }
 
 func NewRunner(cfg *config.Config, plan *Plan, tgt TargetClient, gr GitOps, state *State, log *Logger, dryRun bool) *Runner {
 	return &Runner{
-		cfg:           cfg,
-		plan:          plan,
-		tgt:           tgt,
-		git:           gr,
-		state:         state,
-		log:           log,
-		dryRun:        dryRun,
-		projectsReady: map[string]bool{},
+		cfg:            cfg,
+		plan:           plan,
+		tgt:            tgt,
+		git:            gr,
+		state:          state,
+		log:            log,
+		dryRun:         dryRun,
+		projectsReady:  map[string]bool{},
+		projectsFailed: map[string]error{},
 	}
 }
 
@@ -135,13 +138,13 @@ func (r *Runner) migrateOne(ctx context.Context, job RepoJob) error {
 		return nil
 	}
 
-	// Ensure the Cloud project exists, then create the repository if missing.
-	if r.cfg.Options.CreateCloudProjects && job.CloudProject != "" {
+	// Resolve the destination Cloud project, then create the repository if missing.
+	if job.CloudProject != "" {
 		start := time.Now()
 		if err := r.ensureProject(ctx, job.CloudProject); err != nil {
-			return r.fail(job, rec, "create-project", start, err)
+			return r.fail(job, rec, "project", start, err)
 		}
-		r.event(job, "create-project", "ok", time.Since(start), "")
+		r.event(job, "project", "ok", time.Since(start), "")
 	}
 
 	start := time.Now()
@@ -248,22 +251,46 @@ func (r *Runner) fail(job RepoJob, rec *Record, stage string, start time.Time, c
 	return fmt.Errorf("%s/%s %s: %w", job.Project, job.Slug, stage, cause)
 }
 
+// ensureProject verifies that the destination Cloud project exists, creating it
+// when allowed. Definitive outcomes are cached so each destination is resolved
+// at most once per run.
 func (r *Runner) ensureProject(ctx context.Context, key string) error {
 	r.projectsMu.Lock()
 	if r.projectsReady[key] {
 		r.projectsMu.Unlock()
 		return nil
 	}
+	if err, ok := r.projectsFailed[key]; ok {
+		r.projectsMu.Unlock()
+		return err
+	}
 	r.projectsMu.Unlock()
 
-	if err := r.tgt.CreateProject(ctx, key, key); err != nil {
+	exists, err := r.tgt.ProjectExists(ctx, key)
+	if err != nil {
 		return err
+	}
+	if !exists {
+		if !r.cfg.Options.CreateCloudProjects {
+			err := fmt.Errorf("destination project %q does not exist and create_cloud_projects is false", key)
+			r.rememberProjectFailure(key, err)
+			return err
+		}
+		if err := r.tgt.CreateProject(ctx, key, key); err != nil {
+			return err
+		}
 	}
 
 	r.projectsMu.Lock()
 	r.projectsReady[key] = true
 	r.projectsMu.Unlock()
 	return nil
+}
+
+func (r *Runner) rememberProjectFailure(key string, err error) {
+	r.projectsMu.Lock()
+	r.projectsFailed[key] = err
+	r.projectsMu.Unlock()
 }
 
 func (r *Runner) event(job RepoJob, stage, status string, d time.Duration, errMsg string) {

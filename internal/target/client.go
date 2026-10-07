@@ -64,12 +64,19 @@ func (c *Client) ProjectExists(ctx context.Context, key string) (bool, error) {
 	return false, err
 }
 
-// CreateProject creates a Cloud project. A pre-existing project is not an error.
+// CreateProject creates a Cloud project. A pre-existing project is not an error:
+// Bitbucket Cloud signals that with either HTTP 409 or HTTP 400 with an
+// "already exists" message.
 func (c *Client) CreateProject(ctx context.Context, key, name string) error {
 	body := map[string]any{"key": key, "name": name, "is_private": true}
 	err := c.do(ctx, http.MethodPost, fmt.Sprintf("/workspaces/%s/projects", c.workspace), body, nil)
-	if e, ok := err.(*Error); ok && e.Status == http.StatusConflict {
-		return nil
+	if e, ok := err.(*Error); ok {
+		if e.Status == http.StatusConflict {
+			return nil
+		}
+		if e.Status == http.StatusBadRequest && strings.Contains(e.Body, "already exists") {
+			return nil
+		}
 	}
 	return err
 }

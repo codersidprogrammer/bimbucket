@@ -62,6 +62,12 @@ type (
 	}
 	pingMsg struct{ results []pingResult }
 
+	// destMsg reports which destination Cloud projects already exist.
+	destMsg struct {
+		exists map[string]bool
+		err    error
+	}
+
 	runsMsg struct {
 		runs []migrate.RunSummary
 		err  error
@@ -76,6 +82,14 @@ type (
 	doneMsg  struct{ err error }
 )
 
+// remapValue is a session-scoped per-repo remap layered on top of the plan. An
+// empty Destination inherits the project destination; an empty TargetSlug keeps
+// the normalized source slug.
+type remapValue struct {
+	Destination string
+	TargetSlug  string
+}
+
 // migState holds the interactive migration flow, which is one menu tab.
 type migState struct {
 	phase     migPhase
@@ -86,6 +100,13 @@ type migState struct {
 	filtering bool
 	selected  map[string]bool
 	inited    bool
+
+	editing   bool
+	editKey   string
+	editField int
+	editDest  textinput.Model
+	editSlug  textinput.Model
+	editErr   string
 
 	events   chan migrate.Event
 	doneCh   chan error
@@ -139,6 +160,10 @@ type Model struct {
 	projFiltering bool
 	projShown     int
 
+	destExists   map[string]bool
+	destErr      error
+	destChecking bool
+
 	connTable   table.Model
 	statusTable table.Model
 	cfgTable    table.Model
@@ -151,6 +176,8 @@ type Model struct {
 	histRun     migrate.RunSummary
 	histEvents  []migrate.Event
 	eventsTable table.Model
+
+	remaps map[string]remapValue
 
 	mig migState
 }
@@ -181,6 +208,7 @@ func Run(opts Options) error {
 		state:      migrate.LoadState(opts.StatePath),
 		spinner:    sp,
 		projFilter: filter,
+		remaps:     map[string]remapValue{},
 		mig:        migState{selected: map[string]bool{}, filter: migFilter},
 	}
 	m.rebuildConfig()
@@ -207,11 +235,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case planMsg:
 		m.loadingPlan = false
 		m.plan, m.planErr = msg.plan, msg.err
+		m.destExists = nil
+		m.closeRemap()
 		if msg.plan != nil {
+			m.applyRemaps()
 			m.rebuildMigTable()
 			m.rebuildProjects()
+			m.rebuildStatus()
+			return m, m.checkDestinationsCmd()
 		}
 		m.rebuildStatus()
+		return m, nil
+
+	case destMsg:
+		m.destChecking = false
+		m.destErr = msg.err
+		m.destExists = msg.exists
+		m.rebuildProjects()
+		m.rebuildStatus()
+		m.rebuildConfig()
 		return m, nil
 
 	case pingMsg:
@@ -249,9 +291,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mig.log != nil {
 			m.mig.log.Close()
 		}
+		m.destExists = nil
 		m.rebuildProjects()
 		m.rebuildStatus()
-		return m, nil
+		return m, m.checkDestinationsCmd()
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -259,7 +302,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Route async messages (e.g. cursor blink) to a focused filter input.
+	// Route async messages (e.g. cursor blink) to a focused input.
+	if m.active == viewMigrate && m.mig.editing {
+		var cmd tea.Cmd
+		if m.mig.editField == 0 {
+			m.mig.editDest, cmd = m.mig.editDest.Update(msg)
+		} else {
+			m.mig.editSlug, cmd = m.mig.editSlug.Update(msg)
+		}
+		return m, cmd
+	}
 	if m.active == viewProjects && m.projFiltering {
 		var cmd tea.Cmd
 		m.projFilter, cmd = m.projFilter.Update(msg)
@@ -280,6 +332,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mig.cancel()
 		}
 		return m, tea.Quit
+	}
+
+	// While the remap editor is open it consumes all keys so that digits, "q"
+	// and tab edit the fields instead of triggering app shortcuts.
+	if m.active == viewMigrate && m.mig.editing {
+		return m.handleMigrateKey(msg)
 	}
 
 	// While the project filter is focused, it consumes all keys so that digits,
@@ -359,6 +417,9 @@ func (m *Model) onEnterView() tea.Cmd {
 	case viewProjects:
 		if m.plan == nil && !m.loadingPlan {
 			return m.loadPlan()
+		}
+		if m.plan != nil && m.destExists == nil && !m.destChecking {
+			return m.checkDestinationsCmd()
 		}
 	case viewConnection:
 		if m.ping == nil {
@@ -463,6 +524,56 @@ func (m *Model) pingCmd() tea.Cmd {
 	}
 }
 
+// checkDestinationsCmd probes each distinct destination project in parallel so
+// the UI can show whether the mapped Cloud project already exists.
+func (m *Model) checkDestinationsCmd() tea.Cmd {
+	if m.plan == nil {
+		return nil
+	}
+	dests := make([]string, 0)
+	seen := map[string]bool{}
+	for _, j := range m.plan.Jobs {
+		if j.CloudProject != "" && !seen[j.CloudProject] {
+			seen[j.CloudProject] = true
+			dests = append(dests, j.CloudProject)
+		}
+	}
+	if len(dests) == 0 {
+		return nil
+	}
+	m.destChecking = true
+
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		exists := make(map[string]bool, len(dests))
+		var (
+			mu       sync.Mutex
+			firstErr error
+			wg       sync.WaitGroup
+		)
+		for _, d := range dests {
+			wg.Add(1)
+			go func(d string) {
+				defer wg.Done()
+				ok, err := m.tgt.ProjectExists(ctx, d)
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+					return
+				}
+				exists[d] = ok
+			}(d)
+		}
+		wg.Wait()
+		return destMsg{exists: exists, err: firstErr}
+	}
+}
+
 func (m *Model) loadRunsCmd() tea.Cmd {
 	return func() tea.Msg {
 		runs, err := migrate.ListRuns(m.logDir)
@@ -560,7 +671,7 @@ func (m *Model) helpLine() string {
 		}
 		return helpStyle.Render("  ↑/↓ scroll   enter open run   r reload   tab/1-7 switch view   q quit")
 	case viewMigrate:
-		return helpStyle.Render("  ↑/↓ scroll   space toggle   a all   n none   / filter   enter confirm   tab/1-7 switch view")
+		return helpStyle.Render("  ↑/↓ scroll   space toggle   a all   n none   e remap   / filter   enter confirm   tab/1-7 switch view")
 	case viewAbout:
 		return helpStyle.Render("  tab/1-7 switch view   q quit")
 	default:

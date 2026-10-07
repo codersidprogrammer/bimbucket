@@ -18,12 +18,44 @@ func (m *Model) rebuildStatus() {
 		{"Source", m.endpointStatus(0)},
 		{"Target", m.endpointStatus(1)},
 		{"Plan", m.planStatus()},
+		{"Dest projects", m.destSummary()},
 		{"Migrated", fmt.Sprint(m.countByState(isMigrated))},
 		{"Not migrated", fmt.Sprint(m.countByState(isPending))},
 		{"Failed", fmt.Sprint(m.countByState(isFailed))},
 		{"Run", m.runStatus()},
 	}
 	m.statusTable = m.newTable(cols, rows)
+}
+
+// destSummary counts the distinct destination projects and their existence.
+func (m *Model) destSummary() string {
+	if m.plan == nil {
+		return "loading..."
+	}
+	seen := map[string]bool{}
+	var exist, missing int
+	for _, j := range m.plan.Jobs {
+		d := j.CloudProject
+		if d == "" || seen[d] {
+			continue
+		}
+		seen[d] = true
+		if m.destExists == nil {
+			continue
+		}
+		if m.destExists[d] {
+			exist++
+		} else {
+			missing++
+		}
+	}
+	if len(seen) == 0 {
+		return "-"
+	}
+	if m.destExists == nil {
+		return fmt.Sprintf("%d project(s), checking...", len(seen))
+	}
+	return fmt.Sprintf("%d project(s): %d exist, %d missing", len(seen), exist, missing)
 }
 
 func (m *Model) endpointStatus(idx int) string {

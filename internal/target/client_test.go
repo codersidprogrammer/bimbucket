@@ -116,3 +116,49 @@ func TestCreateProjectConflictIsOK(t *testing.T) {
 		t.Errorf("conflict should be ignored, got %v", err)
 	}
 }
+
+func TestCreateProjectAlreadyExistsBadRequestIsOK(t *testing.T) {
+	c, srv := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":{"message":"Bad request","fields":{"__all__":["Project with this Owner and Key already exists."]}}}`)
+	})
+	defer srv.Close()
+
+	if err := c.CreateProject(context.Background(), "XOPS", "XOPS"); err != nil {
+		t.Errorf("already-exists 400 should be ignored, got %v", err)
+	}
+}
+
+func TestCreateProjectOtherBadRequestErrors(t *testing.T) {
+	c, srv := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":{"message":"Bad request","fields":{"key":["must not be empty"]}}}`)
+	})
+	defer srv.Close()
+
+	if err := c.CreateProject(context.Background(), "XOPS", "XOPS"); err == nil {
+		t.Error("expected error for a non already-exists 400")
+	}
+}
+
+func TestProjectExists(t *testing.T) {
+	status := http.StatusOK
+	c, srv := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/workspaces/ws/projects/XOPS" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		w.WriteHeader(status)
+	})
+	defer srv.Close()
+
+	ok, err := c.ProjectExists(context.Background(), "XOPS")
+	if err != nil || !ok {
+		t.Fatalf("ProjectExists = %v, %v; want true, nil", ok, err)
+	}
+
+	status = http.StatusNotFound
+	ok, err = c.ProjectExists(context.Background(), "XOPS")
+	if err != nil || ok {
+		t.Fatalf("ProjectExists = %v, %v; want false, nil", ok, err)
+	}
+}

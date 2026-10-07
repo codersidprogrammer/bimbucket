@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 
 	"github.com/codersidprogrammer/bimbucket/internal/config"
+	"github.com/codersidprogrammer/bimbucket/internal/migrate"
 )
 
 func (m *Model) rebuildConfig() {
@@ -34,7 +35,23 @@ func (m *Model) rebuildConfig() {
 		if p.IncludeArchived {
 			repos += " (incl. archived)"
 		}
-		add("project", p.Key, repos)
+		dest := "(from source key)"
+		if p.Destination != "" {
+			dest = m.destLabel(p.Destination)
+		}
+		add("project", p.Key, repos+"  ->  "+dest)
+
+		for _, ov := range p.Overrides {
+			dest := "(inherits project)"
+			if ov.Destination != "" {
+				dest = m.destLabel(ov.Destination)
+			}
+			slug := "(same as source)"
+			if ov.TargetSlug != "" {
+				slug = migrate.NormalizeSlug(ov.TargetSlug)
+			}
+			add("override", p.Key+"/"+ov.Repo, dest+"  slug: "+slug)
+		}
 	}
 
 	add("options", "workers", fmt.Sprint(m.cfg.Options.Workers))

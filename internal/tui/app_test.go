@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/codersidprogrammer/bimbucket/internal/config"
@@ -169,6 +170,117 @@ func TestAboutWordmarkAligned(t *testing.T) {
 	m := &Model{}
 	if out := m.viewAbout(); !strings.Contains(out, authorName) {
 		t.Errorf("about view missing author name:\n%s", out)
+	}
+}
+
+func TestDestLabelStatus(t *testing.T) {
+	m := &Model{
+		cfg:        &config.Config{Options: config.Options{CreateCloudProjects: true}},
+		destExists: map[string]bool{"XOPS": true, "NEW": false},
+	}
+	if got := m.destLabel("XOPS"); got != "XOPS (ok)" {
+		t.Errorf("existing dest = %q", got)
+	}
+	if got := m.destLabel("NEW"); got != "NEW (new)" {
+		t.Errorf("creatable dest = %q", got)
+	}
+
+	m.destExists = nil
+	if got := m.destLabel("XOPS"); got != "XOPS (?)" {
+		t.Errorf("unchecked dest = %q", got)
+	}
+
+	m.cfg.Options.CreateCloudProjects = false
+	m.destExists = map[string]bool{"NEW": false}
+	if got := m.destLabel("NEW"); got != "NEW (missing)" {
+		t.Errorf("missing dest without create = %q", got)
+	}
+}
+
+func testInput(value string) textinput.Model {
+	in := textinput.New()
+	in.SetValue(value)
+	return in
+}
+
+func remapModel(t *testing.T, cfg *config.Config, jobs ...migrate.RepoJob) *Model {
+	t.Helper()
+	m := &Model{
+		cfg:        cfg,
+		state:      migrate.LoadState(filepath.Join(t.TempDir(), "state.json")),
+		projFilter: textinput.New(),
+		spinner:    spinner.New(),
+		width:      120,
+		height:     40,
+		remaps:     map[string]remapValue{},
+		mig:        migState{selected: map[string]bool{}, filter: textinput.New()},
+	}
+	m.plan = &migrate.Plan{Jobs: jobs}
+	m.rebuildMigTable()
+	return m
+}
+
+func TestRemapEditorOpens(t *testing.T) {
+	m := remapModel(t, &config.Config{Projects: []config.Project{{Key: "XOPS"}}},
+		migrate.RepoJob{Project: "XOPS", Slug: "svc", TargetSlug: "svc", CloudProject: "XOPS"})
+
+	_, _ = m.handleMigrateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	if !m.mig.editing {
+		t.Fatal("pressing e should open the remap editor")
+	}
+	if m.mig.editKey != "XOPS/svc" {
+		t.Errorf("edit key = %q, want XOPS/svc", m.mig.editKey)
+	}
+}
+
+func TestRemapCommitAppliesAndInherits(t *testing.T) {
+	cfg := &config.Config{Projects: []config.Project{{Key: "XOPS", Destination: "XOPS"}}}
+	m := remapModel(t, cfg,
+		migrate.RepoJob{Project: "XOPS", Slug: "microservice-soev2", TargetSlug: "microservice-soev2", CloudProject: "XOPS"})
+
+	m.mig.editKey = "XOPS/microservice-soev2"
+	m.mig.editDest = testInput("MICROSERVICE")
+	m.mig.editSlug = testInput("")
+	_, _ = m.commitRemap()
+	if got := m.plan.Jobs[0].CloudProject; got != "MICROSERVICE" {
+		t.Fatalf("cloud project = %q, want MICROSERVICE", got)
+	}
+	if got := m.plan.Jobs[0].TargetSlug; got != "microservice-soev2" {
+		t.Errorf("target slug = %q, want source slug", got)
+	}
+
+	// Rename the target slug; empty destination inherits the project default.
+	m.mig.editKey = "XOPS/microservice-soev2"
+	m.mig.editDest = testInput("")
+	m.mig.editSlug = testInput("API-v2")
+	_, _ = m.commitRemap()
+	if got := m.plan.Jobs[0].TargetSlug; got != "api-v2" {
+		t.Fatalf("target slug = %q, want api-v2", got)
+	}
+	if got := m.plan.Jobs[0].CloudProject; got != "XOPS" {
+		t.Errorf("cloud project = %q, want XOPS (inherited)", got)
+	}
+}
+
+func TestRemapCollisionBlocked(t *testing.T) {
+	cfg := &config.Config{Projects: []config.Project{{Key: "XOPS"}, {Key: "ABC"}}}
+	m := remapModel(t, cfg,
+		migrate.RepoJob{Project: "XOPS", Slug: "a", TargetSlug: "a", CloudProject: "XOPS"},
+		migrate.RepoJob{Project: "ABC", Slug: "b", TargetSlug: "b", CloudProject: "ABC"})
+
+	m.mig.editKey = "ABC/b"
+	m.mig.editDest = testInput("")
+	m.mig.editSlug = testInput("a")
+	_, _ = m.commitRemap()
+
+	if m.mig.editErr == "" {
+		t.Fatal("expected collision error")
+	}
+	if got := m.plan.Jobs[1]; got.TargetSlug != "b" || got.CloudProject != "ABC" {
+		t.Errorf("plan must be unchanged on collision, got %+v", got)
+	}
+	if _, ok := m.remaps["ABC/b"]; ok {
+		t.Error("colliding remap must not be stored")
 	}
 }
 

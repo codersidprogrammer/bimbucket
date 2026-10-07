@@ -106,3 +106,111 @@ func TestBuildPlanFailsOnSlugCollision(t *testing.T) {
 		t.Fatalf("expected collision error, got %v", err)
 	}
 }
+
+func TestBuildPlanAppliesDestinationMapping(t *testing.T) {
+	mk := func(slug string) source.Repository {
+		return source.Repository{Slug: slug}
+	}
+	lister := fakeLister{repos: map[string][]source.Repository{
+		"XOPS": {mk("a")},
+		"ABC":  {mk("b")},
+		"DEV":  {mk("c")},
+	}}
+	cfg := &config.Config{
+		Source: config.Source{BaseURL: "https://bb.example.com"},
+		Projects: []config.Project{
+			{Key: "XOPS", Destination: "PLATFORM"}, // explicit mapping
+			{Key: "ABC"},                           // default = normalized source key
+			{Key: "DEV", Destination: "PLATFORM"},  // two sources -> one destination
+		},
+	}
+
+	plan, err := BuildPlan(context.Background(), cfg, lister)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	bySlug := map[string]RepoJob{}
+	for _, j := range plan.Jobs {
+		bySlug[j.Slug] = j
+	}
+	if got := bySlug["a"].CloudProject; got != "PLATFORM" {
+		t.Errorf("a destination = %q, want PLATFORM", got)
+	}
+	if got := bySlug["b"].CloudProject; got != "ABC" {
+		t.Errorf("b destination = %q, want ABC (default)", got)
+	}
+	if got := bySlug["c"].CloudProject; got != "PLATFORM" {
+		t.Errorf("c destination = %q, want PLATFORM", got)
+	}
+}
+
+func TestResolveJobAppliesOverrides(t *testing.T) {
+	p := config.Project{
+		Key:         "XOPS",
+		Destination: "XOPS",
+		Overrides: []config.RepoOverride{
+			{Repo: "microservice-soev2", Destination: "MICROSERVICE"},
+			{Repo: "legacy", TargetSlug: "API-v2"},
+		},
+	}
+	cases := []struct {
+		slug, wantProject, wantSlug string
+	}{
+		{"microservice-soev2", "MICROSERVICE", "microservice-soev2"},
+		{"legacy", "XOPS", "api-v2"},
+		{"other", "XOPS", "other"},
+	}
+	for _, tc := range cases {
+		gotProject, gotSlug := ResolveJob(p, tc.slug)
+		if gotProject != tc.wantProject || gotSlug != tc.wantSlug {
+			t.Errorf("ResolveJob(%q) = (%q, %q), want (%q, %q)", tc.slug, gotProject, gotSlug, tc.wantProject, tc.wantSlug)
+		}
+	}
+}
+
+func TestBuildPlanAppliesRepoOverrides(t *testing.T) {
+	mk := func(slug string) source.Repository { return source.Repository{Slug: slug} }
+	lister := fakeLister{repos: map[string][]source.Repository{
+		"XOPS": {mk("xopsapi"), mk("microservice-soev2")},
+	}}
+	cfg := &config.Config{
+		Source: config.Source{BaseURL: "https://bb.example.com"},
+		Projects: []config.Project{{
+			Key: "XOPS", Destination: "XOPS",
+			Overrides: []config.RepoOverride{{Repo: "microservice-soev2", Destination: "MICROSERVICE"}},
+		}},
+	}
+
+	plan, err := BuildPlan(context.Background(), cfg, lister)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	bySlug := map[string]RepoJob{}
+	for _, j := range plan.Jobs {
+		bySlug[j.Slug] = j
+	}
+	if got := bySlug["xopsapi"].CloudProject; got != "XOPS" {
+		t.Errorf("xopsapi destination = %q, want XOPS", got)
+	}
+	if got := bySlug["microservice-soev2"].CloudProject; got != "MICROSERVICE" {
+		t.Errorf("microservice-soev2 destination = %q, want MICROSERVICE", got)
+	}
+}
+
+func TestBuildPlanFailsOnOverrideTargetCollision(t *testing.T) {
+	mk := func(slug string) source.Repository { return source.Repository{Slug: slug} }
+	lister := fakeLister{repos: map[string][]source.Repository{
+		"XOPS": {mk("a")},
+		"ABC":  {mk("b")},
+	}}
+	cfg := &config.Config{
+		Source: config.Source{BaseURL: "https://bb.example.com"},
+		Projects: []config.Project{
+			{Key: "XOPS"},
+			{Key: "ABC", Overrides: []config.RepoOverride{{Repo: "b", TargetSlug: "a"}}},
+		},
+	}
+	if _, err := BuildPlan(context.Background(), cfg, lister); err == nil || !strings.Contains(err.Error(), "collision") {
+		t.Fatalf("expected override collision error, got %v", err)
+	}
+}

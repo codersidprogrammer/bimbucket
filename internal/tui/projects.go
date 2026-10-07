@@ -40,12 +40,13 @@ func (m *Model) rebuildProjects() {
 	if m.plan == nil {
 		return
 	}
-	flex := m.fillWidth(18 + 14 + 18)
+	flex := m.fillWidth(16 + 20 + 14 + 18)
 	repoW := flex / 2
 	targetW := flex - repoW
 
 	cols := []table.Column{
-		{Title: "Project", Width: 18},
+		{Title: "Project", Width: 16},
+		{Title: "Dest project", Width: 20},
 		{Title: "Repo", Width: repoW},
 		{Title: "Target slug", Width: targetW},
 		{Title: "Status", Width: 14},
@@ -58,13 +59,34 @@ func (m *Model) rebuildProjects() {
 			continue
 		}
 		rec := m.state.Get(j.Project, j.Slug)
-		rows = append(rows, table.Row{j.Project, j.Slug, j.TargetSlug, repoStatus(rec), updatedAt(rec)})
+		rows = append(rows, table.Row{j.Project, m.destLabel(j.CloudProject), j.Slug, j.TargetSlug, repoStatus(rec), updatedAt(rec)})
 	}
 	m.projShown = len(rows)
 	m.projTable = m.newTable(cols, rows)
 	if h := m.contentHeight() - 1; h >= 3 { // reserve a line for the search bar
 		m.projTable.SetHeight(h)
 	}
+}
+
+// destLabel renders a destination project key with its Cloud existence status.
+func (m *Model) destLabel(dest string) string {
+	if dest == "" {
+		return "-"
+	}
+	if m.destExists == nil {
+		return dest + " (?)"
+	}
+	exists, ok := m.destExists[dest]
+	if !ok {
+		return dest + " (?)"
+	}
+	if exists {
+		return dest + " (ok)"
+	}
+	if m.cfg.Options.CreateCloudProjects {
+		return dest + " (new)"
+	}
+	return dest + " (missing)"
 }
 
 func (m *Model) projQuery() string {
