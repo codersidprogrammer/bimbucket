@@ -34,9 +34,10 @@ type Record struct {
 // State is a small ledger used for idempotent re-runs. It is not a mirror of
 // repository data.
 type State struct {
-	mu      sync.Mutex
-	path    string
-	Records map[string]*Record `json:"records"`
+	mu       sync.Mutex
+	path     string
+	Records  map[string]*Record `json:"records"`
+	onUpdate func(*Record)
 }
 
 func LoadState(path string) *State {
@@ -79,10 +80,42 @@ func (s *State) Snapshot() []*Record {
 
 func (s *State) Update(r *Record) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	r.Updated = time.Now().UTC()
 	s.Records[key(r.Project, r.Slug)] = r
 	_ = s.writeLocked()
+	hook := s.onUpdate
+	cp := *r
+	s.mu.Unlock()
+
+	if hook != nil {
+		hook(&cp)
+	}
+}
+
+// SetOnUpdate installs a hook invoked after every local Update with a copy of
+// the record. It exists so an external mirror (e.g. co-op sync) can observe
+// changes without the State package knowing about the network. The hook runs
+// outside the lock and must not call back into State synchronously.
+func (s *State) SetOnUpdate(f func(*Record)) {
+	s.mu.Lock()
+	s.onUpdate = f
+	s.mu.Unlock()
+}
+
+// Merge applies a record received from a peer if it is newer than the local one
+// (last-write-wins by Updated). It persists the ledger but never fires the
+// onUpdate hook, so mirroring a remote change cannot echo back to the peer.
+func (s *State) Merge(r *Record) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := key(r.Project, r.Slug)
+	if cur, ok := s.Records[k]; ok && !r.Updated.After(cur.Updated) {
+		return false
+	}
+	cp := *r
+	s.Records[k] = &cp
+	_ = s.writeLocked()
+	return true
 }
 
 func (s *State) writeLocked() error {

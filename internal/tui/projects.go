@@ -12,7 +12,7 @@ import (
 
 // newTable builds a focused, full-size table consistent across views.
 func (m *Model) newTable(cols []table.Column, rows []table.Row) table.Model {
-	width := m.width - 2
+	width := m.mainWidth() - 2
 	if width < 20 {
 		width = 20
 	}
@@ -29,7 +29,7 @@ func (m *Model) newTable(cols []table.Column, rows []table.Row) table.Model {
 // fillWidth returns the width left for a flexible column after the fixed ones
 // and a small margin, with a sane minimum.
 func (m *Model) fillWidth(fixed int) int {
-	w := m.width - 2 - fixed
+	w := m.mainWidth() - 2 - fixed
 	if w < 20 {
 		w = 20
 	}

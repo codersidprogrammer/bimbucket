@@ -10,9 +10,11 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/codersidprogrammer/bimbucket/internal/config"
+	"github.com/codersidprogrammer/bimbucket/internal/coop"
 	"github.com/codersidprogrammer/bimbucket/internal/migrate"
 	"github.com/codersidprogrammer/bimbucket/internal/source"
 	"github.com/codersidprogrammer/bimbucket/internal/target"
@@ -28,10 +30,11 @@ const (
 	viewConfig
 	viewHistory
 	viewMigrate
+	viewCoop
 	viewAbout
 )
 
-var viewNames = []string{"Projects", "Connection", "Status", "Config", "History", "Migrate", "About"}
+var viewNames = []string{"Projects", "Connection", "Status", "Config", "History", "Migrate", "Co-op", "About"}
 
 const viewCount = int(viewAbout) + 1
 
@@ -46,6 +49,8 @@ type Options struct {
 	StatePath  string
 	LogDir     string
 	DryRun     bool
+	Coop       *coop.Manager
+	JoinLink   string
 }
 
 type (
@@ -81,6 +86,17 @@ type (
 
 	eventMsg migrate.Event
 	doneMsg  struct{ err error }
+
+	// coopUpdateMsg is sent by the coop manager (via Program.Send) whenever the
+	// shared room changes; it carries no data, the UI re-reads the snapshot.
+	coopUpdateMsg struct{}
+	// coopJoinMsg reports the outcome of hosting/joining a room.
+	coopJoinMsg struct {
+		invite string
+		err    error
+	}
+	// leaseMsg reports the outcome of a run-lease acquisition attempt.
+	leaseMsg struct{ err error }
 )
 
 // migState holds the interactive migration flow, which is one menu tab.
@@ -107,6 +123,7 @@ type migState struct {
 	cancel   context.CancelFunc
 	progress []migrate.Event
 	runErr   error
+	leaseErr string
 }
 
 type migPhase int
@@ -173,6 +190,18 @@ type Model struct {
 	eventsTable table.Model
 
 	mig migState
+
+	// co-op mode
+	coop      *coop.Manager
+	chat      viewport.Model
+	chatInput textinput.Model
+	chatFocus bool
+	sideW     int
+	coopMode  coopMode
+	coopField int
+	coopForm  [3]textinput.Model
+	coopMsg   string
+	coopErr   string
 }
 
 // Run starts the interactive menu TUI.
@@ -190,6 +219,11 @@ func Run(opts Options) error {
 	migFilter.Placeholder = "filter project / repo / target"
 	migFilter.CharLimit = 128
 
+	chatIn := textinput.New()
+	chatIn.Prompt = "> "
+	chatIn.Placeholder = "type a message"
+	chatIn.CharLimit = 500
+
 	m := &Model{
 		cfg:        opts.Config,
 		src:        opts.Source,
@@ -202,17 +236,32 @@ func Run(opts Options) error {
 		state:      migrate.LoadState(opts.StatePath),
 		spinner:    sp,
 		projFilter: filter,
+		chatInput:  chatIn,
+		coop:       opts.Coop,
 		mig:        migState{selected: map[string]bool{}, filter: migFilter},
 	}
 	m.rebuildConfig()
+	m.resize()
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	if opts.JoinLink != "" {
+		m.active = viewCoop
+		m.startCoopJoin(opts.JoinLink)
+	}
+
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
+	if m.coop != nil {
+		m.coop.Close()
+	}
 	return err
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.pingCmd(), m.loadPlan())
+	cmds := []tea.Cmd{m.spinner.Tick, m.pingCmd(), m.loadPlan()}
+	if m.coop != nil {
+		cmds = append(cmds, waitForCoop(m.coop.Notifications()))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -284,6 +333,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mig.log != nil {
 			m.mig.log.Close()
 		}
+		if m.coop != nil {
+			m.coop.ReleaseLease()
+		}
 		m.destExists = nil
 		m.rebuildMigTable()
 		m.rebuildProjects()
@@ -294,9 +346,53 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+
+	case coopUpdateMsg:
+		m.onCoopUpdate()
+		if m.coop != nil {
+			return m, waitForCoop(m.coop.Notifications())
+		}
+		return m, nil
+
+	case coopJoinMsg:
+		if msg.err != nil {
+			m.coopMsg = msg.err.Error()
+			m.coopErr = msg.err.Error()
+			return m, nil
+		}
+		m.coopMode = coopIdle
+		m.coopMsg = ""
+		m.coopErr = ""
+		m.stopCoopForms()
+		m.resize()
+		return m, nil
+
+	case leaseMsg:
+		if msg.err != nil {
+			m.mig.leaseErr = msg.err.Error()
+			m.coopErr = msg.err.Error()
+			return m, nil
+		}
+		m.coopErr = ""
+		m.mig.leaseErr = ""
+		m.mig.phase = migRunning
+		return m, m.startRun()
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	}
 
 	// Route async messages (e.g. cursor blink) to a focused input.
+	if m.chatFocus {
+		var cmd tea.Cmd
+		m.chatInput, cmd = m.chatInput.Update(msg)
+		return m, cmd
+	}
+	if m.active == viewCoop && m.coopMode != coopIdle {
+		var cmd tea.Cmd
+		m.coopForm[m.coopField], cmd = m.coopForm[m.coopField].Update(msg)
+		return m, cmd
+	}
 	if m.active == viewMigrate && m.mig.editing {
 		var cmd tea.Cmd
 		if m.mig.editField == 0 {
@@ -336,7 +432,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.mig.phase == migRunning && m.mig.cancel != nil {
 			m.mig.cancel()
 		}
+		if m.coop != nil {
+			m.coop.ReleaseLease()
+		}
 		return m, tea.Quit
+	}
+
+	// The chat input, when focused, consumes all keys so digits, "q" and tab
+	// type a message instead of triggering app shortcuts.
+	if m.chatFocus {
+		return m.handleChatKey(msg)
+	}
+
+	// An open co-op form also consumes all keys for the same reason.
+	if m.active == viewCoop && m.coopMode != coopIdle {
+		return m.handleCoopKey(msg)
 	}
 
 	// While the remap editor is open it consumes all keys so that digits, "q"
@@ -401,6 +511,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.active == viewProjects {
 			m.projFiltering = true
 			return m, m.projFilter.Focus()
+		}
+	case "c":
+		if m.sidebarVisible() {
+			m.chatFocus = true
+			return m, m.chatInput.Focus()
 		}
 	case "tab":
 		return m.switchView(view((int(m.active) + 1) % viewCount))
@@ -477,6 +592,9 @@ func (m *Model) handleViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case viewHistory:
 		return m.handleHistoryKey(msg)
+
+	case viewCoop:
+		return m.handleCoopViewKey(msg)
 
 	case viewMigrate:
 		return m.handleMigrateKey(msg)
@@ -616,17 +734,32 @@ func (m *Model) resize() {
 	if m.width == 0 {
 		return
 	}
+	m.layoutSidebar()
 	m.rebuildProjects()
 	m.rebuildConnection()
 	m.rebuildStatus()
 	m.rebuildConfig()
 	m.rebuildHistory()
 	m.rebuildEventsTable()
-	if w := m.width - 6; w > 10 {
+	if w := m.mainWidth() - 6; w > 10 {
 		m.projFilter.Width = w
 		m.mig.filter.Width = w
 	}
+	if m.coopMode != coopIdle {
+		m.resizeCoopForm()
+	}
 	m.rebuildMigTable()
+}
+
+// resizeCoopForm reflows the host/join inputs to the current width.
+func (m *Model) resizeCoopForm() {
+	w := m.width - 24
+	if w < 20 {
+		w = 20
+	}
+	for i := range m.coopForm {
+		m.coopForm[i].Width = w
+	}
 }
 
 func (m *Model) View() string {
@@ -635,9 +768,6 @@ func (m *Model) View() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(m.tabBar())
-	b.WriteString("\n")
-
 	switch m.active {
 	case viewProjects:
 		b.WriteString(m.viewProjects())
@@ -651,13 +781,35 @@ func (m *Model) View() string {
 		b.WriteString(m.viewHistory())
 	case viewMigrate:
 		b.WriteString(m.viewMigrate())
+	case viewCoop:
+		b.WriteString(m.viewCoop())
 	case viewAbout:
 		b.WriteString(m.viewAbout())
 	}
-
 	b.WriteString("\n")
 	b.WriteString(m.helpLine())
-	return b.String()
+
+	tab := m.tabBar()
+	if e := m.coopError(); e != "" {
+		tab += "\n" + badStyle.Render(" ! co-op: "+e)
+	}
+	if m.sideW > 0 {
+		return tab + "\n" + joinColumns(b.String(), m.viewSidebar(), m.mainWidth())
+	}
+	return tab + "\n" + b.String()
+}
+
+// coopError returns a co-op error to surface globally, or "" when healthy.
+func (m *Model) coopError() string {
+	if m.coopErr != "" {
+		return m.coopErr
+	}
+	if m.coop != nil {
+		if e := m.coop.Snapshot().Err; e != "" {
+			return e
+		}
+	}
+	return ""
 }
 
 func (m *Model) tabBar() string {
@@ -674,23 +826,38 @@ func (m *Model) tabBar() string {
 }
 
 func (m *Model) helpLine() string {
+	var s string
 	switch m.active {
 	case viewProjects:
-		return helpStyle.Render("  ↑/↓ scroll   / filter   s status   r refresh   tab/1-7 switch view   q quit")
+		s = "  ↑/↓ scroll   / filter   s status   r refresh   tab/1-8 switch view   q quit"
 	case viewConnection:
-		return helpStyle.Render("  r re-check   tab/1-7 switch view   q quit")
+		s = "  r re-check   tab/1-8 switch view   q quit"
 	case viewHistory:
 		if m.histDetail {
-			return helpStyle.Render("  ↑/↓ scroll   esc back to runs   r reload   q quit")
+			s = "  ↑/↓ scroll   esc back to runs   r reload   q quit"
+		} else {
+			s = "  ↑/↓ scroll   enter open run   r reload   tab/1-8 switch view   q quit"
 		}
-		return helpStyle.Render("  ↑/↓ scroll   enter open run   r reload   tab/1-7 switch view   q quit")
 	case viewMigrate:
-		return helpStyle.Render("  ↑/↓ scroll   space toggle   a all   n none   e remap   / filter   enter confirm   tab/1-7 switch view")
+		s = "  ↑/↓ scroll   space toggle   a all   n none   e remap   / filter   enter confirm   tab/1-8 switch view"
+	case viewCoop:
+		switch {
+		case m.coop == nil:
+			s = "  co-op unavailable   tab/1-8 switch view   q quit"
+		case m.coop.Connected():
+			s = "  l leave room   c chat   tab/1-8 switch view   q quit"
+		default:
+			s = "  h host   j join   tab/1-8 switch view   q quit"
+		}
 	case viewAbout:
-		return helpStyle.Render("  tab/1-7 switch view   q quit")
+		s = "  tab/1-8 switch view   q quit"
 	default:
-		return helpStyle.Render("  ↑/↓ scroll   tab/1-7 switch view   q quit")
+		s = "  ↑/↓ scroll   tab/1-8 switch view   q quit"
 	}
+	if m.sidebarVisible() && !strings.Contains(s, "c chat") {
+		s += "   c chat"
+	}
+	return helpStyle.Render(s)
 }
 
 // --- shared helpers ---------------------------------------------------------

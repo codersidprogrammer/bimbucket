@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/codersidprogrammer/bimbucket/internal/config"
+	"github.com/codersidprogrammer/bimbucket/internal/coop"
 	"github.com/codersidprogrammer/bimbucket/internal/git"
 	"github.com/codersidprogrammer/bimbucket/internal/migrate"
 	"github.com/codersidprogrammer/bimbucket/internal/source"
@@ -15,7 +17,7 @@ import (
 )
 
 // version is embedded at build time via -ldflags "-X main.version=...".
-var version = "1.0.3"
+var version = "1.1.0-beta"
 
 func main() {
 	var (
@@ -27,6 +29,8 @@ func main() {
 		logDir      = flag.String("log-dir", "logs", "directory for run logs and reports")
 		statePath   = flag.String("state", "migration-state.json", "path to the resume/idempotency state file")
 		headless    = flag.Bool("no-tui", false, "run without the TUI (non-interactive)")
+		coopJoin    = flag.String("coop-join", "", "join a co-op room by invite link on startup")
+		coopName    = flag.String("coop-name", "", "display name for this device in co-op mode")
 		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -70,6 +74,12 @@ func main() {
 		return
 	}
 
+	// Co-op mode is optional. The manager is always available so a joiner can
+	// use an invite link that embeds the database URL; FIREBASE_DB_URL is only
+	// required to host (or to join a link without an embedded URL).
+	coopMgr := coop.New(os.Getenv("FIREBASE_DB_URL"), os.Getenv("FIREBASE_API_KEY"),
+		coopDeviceName(*coopName), migrate.LoadState(*statePath))
+
 	// The TUI builds the plan lazily so it can still open and report a source
 	// connection failure via the Connection view.
 	if err := tui.Run(tui.Options{
@@ -81,9 +91,23 @@ func main() {
 		StatePath:  *statePath,
 		LogDir:     *logDir,
 		DryRun:     *dryRun,
+		Coop:       coopMgr,
+		JoinLink:   *coopJoin,
 	}); err != nil {
 		fatal(err)
 	}
+}
+
+// coopDeviceName resolves the display name for this device: an explicit flag,
+// else the hostname, else a short random fallback.
+func coopDeviceName(explicit string) string {
+	if explicit = strings.TrimSpace(explicit); explicit != "" {
+		return explicit
+	}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return "device"
 }
 
 func fatal(err error) {

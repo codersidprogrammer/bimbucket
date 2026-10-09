@@ -61,3 +61,5 @@ changelog:
 
 release:
   draft: false
+  # Mark prerelease tags (e.g. v1.1.0-beta) as pre-releases on GitHub.
+  prerelease: auto

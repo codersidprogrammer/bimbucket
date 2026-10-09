@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -177,6 +178,7 @@ func (m *Model) handleMigrateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			if m.countSelected() > 0 {
+				m.mig.leaseErr = ""
 				m.mig.phase = migConfirm
 			}
 			return m, nil
@@ -190,6 +192,9 @@ func (m *Model) handleMigrateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "d":
 			m.dryRun = !m.dryRun
 		case "enter":
+			if m.requireLease() {
+				return m, m.acquireLeaseCmd()
+			}
 			m.mig.phase = migRunning
 			return m, m.startRun()
 		case "esc":
@@ -324,6 +329,7 @@ func (m *Model) commitRemap() (tea.Model, tea.Cmd) {
 	}
 
 	m.applyRemaps()
+	m.publishRemap(j.Project, j.Slug, dest, slug)
 	m.closeRemap()
 	m.rebuildMigTable()
 	m.rebuildProjects()
@@ -389,10 +395,17 @@ func (m *Model) viewMigrate() string {
 		if m.dryRun {
 			plan = "DRY RUN"
 		}
-		return fmt.Sprintf(
-			"\n  %s\n\n  Repositories: %d\n  Mode:         %s\n  Workers:      %d\n\n  enter run    d toggle dry-run    esc back\n",
-			titleStyle.Render("Confirm migration"), m.countSelected(), plan, m.cfg.Options.Workers,
-		)
+		var b strings.Builder
+		fmt.Fprintf(&b, "\n  %s\n\n  Repositories: %d\n  Mode:         %s\n  Workers:      %d\n",
+			titleStyle.Render("Confirm migration"), m.countSelected(), plan, m.cfg.Options.Workers)
+		if owner, held := m.coop.LeaseOwner(); held && owner != m.coop.Snapshot().Device {
+			b.WriteString("  " + warnStyle.Render("a run is in progress on "+owner) + "\n")
+		}
+		if m.mig.leaseErr != "" {
+			b.WriteString("  " + badStyle.Render(m.mig.leaseErr) + "\n")
+		}
+		b.WriteString("\n  enter run    d toggle dry-run    esc back\n")
+		return b.String()
 
 	case migRunning:
 		var b strings.Builder
@@ -430,6 +443,23 @@ func (m *Model) migDoneView() string {
 	}
 	b.WriteString(fmt.Sprintf("  events: %d\n  logs:   %s\n\n  esc back   1 projects   q quit\n", len(m.mig.progress), m.logDir))
 	return b.String()
+}
+
+// requireLease reports whether a destructive run must first take the shared
+// co-op lease. Dry runs and non-coop sessions never need it.
+func (m *Model) requireLease() bool {
+	return m.coop != nil && m.coop.Connected() && !m.dryRun
+}
+
+// acquireLeaseCmd takes the room's run lease off the UI thread.
+func (m *Model) acquireLeaseCmd() tea.Cmd {
+	m.mig.runErr = nil
+	mgr := m.coop
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return leaseMsg{err: mgr.AcquireLease(ctx, runID())}
+	}
 }
 
 func (m *Model) startRun() tea.Cmd {

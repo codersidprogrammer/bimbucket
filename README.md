@@ -13,10 +13,14 @@ of scope.
 ## Features
 
 - Interactive TUI with menu tabs: **Projects**, **Connection**, **Status**,
-  **Config**, **History**, **Migrate**, and **About**.
+  **Config**, **History**, **Migrate**, **Co-op**, and **About**.
 - Select repositories with a searchable, scrollable table; toggle rows,
-  select-all / clear-all on the visible set.
+  select-all / clear-all on the visible set. Mouse-friendly: click tabs, scroll
+  with the wheel, and click the chat panel.
 - Idempotent re-runs: a state ledger tracks what is already migrated.
+- Optional **co-op mode**: share progress and config remaps across devices in
+  real time over Firebase, with an invite-link room, a passphrase, a shared
+  run lease, and a live chat sidebar.
 - Safe by default: `-dry-run` mode, optional rollback of repositories created by
   a failed run, and a connection check before migrating.
 - Ephemeral mirror clones (cleaned up automatically) — `git push --mirror` is
@@ -189,7 +193,7 @@ Run the interactive TUI:
 bimbucket -config configs/projects.yaml
 ```
 
-Navigate tabs with `1`-`7` or `tab`. In **Projects**, press `/` to filter and
+Navigate tabs with `1`-`8` or `tab`. In **Projects**, press `/` to filter and
 `r` to refresh. In **Migrate**, use `↑/↓` to scroll, `space` to toggle a row,
 `a`/`n` to select/clear the visible rows, `/` to filter, and `enter` to confirm.
 
@@ -210,8 +214,63 @@ bimbucket -config configs/projects.yaml -no-tui -dry-run
 | `-temp-dir` | OS temp | Base directory for ephemeral clones |
 | `-log-dir` | `logs` | Directory for run logs and reports |
 | `-state` | `migration-state.json` | Resume / idempotency state file |
+| `-coop-join` | | Join a co-op room by invite link on startup |
+| `-coop-name` | hostname | Display name for this device in co-op mode |
 | `-no-tui` | `false` | Run non-interactively |
 | `-version` | | Print version and exit |
+
+## Co-op mode
+
+Co-op mode lets two or more devices work the same migration set with one shared
+ledger. The **host** needs `FIREBASE_DB_URL` set (see `.env.example`); an
+**invitee does not**, because the invite link embeds the database URL. Everything
+else — the local `migration-state.json`, `-no-tui`, and `-dry-run` — keeps
+working exactly as before, online or off.
+
+### Hosting a room
+
+1. Open the **Co-op** tab (key `7`).
+2. Press `h` to host, enter **your name**, a room name, and a passphrase, then
+   `enter`.
+3. The room shows an invite link such as
+   `bimbucket://coop/<room>?db=https://<project>-default-rtdb.firebaseio.com`.
+   Share the link and the passphrase through separate channels. The link embeds
+   the database URL, so invitees do not need to configure anything.
+
+A partner joins with the link and passphrase; they pick their own display name
+(pre-filled with `-coop-name` or the hostname):
+
+```sh
+bimbucket -coop-join 'bimbucket://coop/<room>?db=https://<project>-default-rtdb.firebaseio.com'
+# or open the Co-op tab and press j
+```
+
+> If you host with `FIREBASE_API_KEY` set, invitees must set the same key (it is
+> not embedded in the link). Open-rules setups need no key.
+
+Once connected, the room syncs, in real time:
+
+- **progress** — every entry in the migration-state ledger;
+- **config remaps** — the per-repository overrides from `projects.yaml`;
+- **chat** — a sidebar on the right (press `c` or click it to type);
+- **run lease** — only one device may start a destructive run at a time. A run
+  in progress elsewhere is reported instead of starting a second one. Dry runs
+  never take the lease.
+
+The passphrase is never stored: the database subtree is derived from
+`sha256(roomID + passphrase)`, so only someone with *both* the link and the
+passphrase can reach the room's data. Set the Realtime Database rules to allow
+access under `/rooms` only:
+
+```json
+{ "rules": { "rooms": { ".read": true, ".write": true } } }
+```
+
+> Co-op syncs repository metadata (names, statuses) and chat text, never
+> credentials. Anyone who obtains the link **and** passphrase can read the room,
+> so treat both as secrets. Conflicts in the shared ledger and remaps are
+> resolved last-write-wins by timestamp.
+
 
 ## Development
 
