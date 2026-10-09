@@ -96,14 +96,57 @@ func TestBuildPlanExpandsAndFilters(t *testing.T) {
 	}
 }
 
-func TestBuildPlanFailsOnSlugCollision(t *testing.T) {
+func TestBuildPlanAutoRenamesSlugCollision(t *testing.T) {
 	lister := fakeLister{repos: map[string][]source.Repository{
 		"XOPS": {{Slug: "api"}},
 		"ABC":  {{Slug: "API"}},
 	}}
-	_, err := BuildPlan(context.Background(), baseCfg(), lister)
+	// Default policy (empty) is auto.
+	plan, err := BuildPlan(context.Background(), baseCfg(), lister)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	byProject := map[string]string{}
+	for _, j := range plan.Jobs {
+		byProject[j.Project] = j.TargetSlug
+	}
+	if got := byProject["XOPS"]; got != "xops-api" {
+		t.Errorf("XOPS/api target = %q, want xops-api", got)
+	}
+	if got := byProject["ABC"]; got != "abc-api" {
+		t.Errorf("ABC/API target = %q, want abc-api", got)
+	}
+}
+
+func TestBuildPlanFailsOnSlugCollisionWhenConfigured(t *testing.T) {
+	lister := fakeLister{repos: map[string][]source.Repository{
+		"XOPS": {{Slug: "api"}},
+		"ABC":  {{Slug: "API"}},
+	}}
+	cfg := baseCfg()
+	cfg.Options.OnSlugCollision = config.OnSlugCollisionFail
+	_, err := BuildPlan(context.Background(), cfg, lister)
 	if err == nil || !strings.Contains(err.Error(), "collision") {
 		t.Fatalf("expected collision error, got %v", err)
+	}
+}
+
+func TestBuildPlanRejectsExplicitOverrideCollisionUnderAuto(t *testing.T) {
+	mk := func(slug string) source.Repository { return source.Repository{Slug: slug} }
+	lister := fakeLister{repos: map[string][]source.Repository{
+		"XOPS": {mk("a")},
+		"ABC":  {mk("b")},
+	}}
+	cfg := &config.Config{
+		Source: config.Source{BaseURL: "https://bb.example.com"},
+		// Empty policy => auto, but explicit collisions are still rejected.
+		Projects: []config.Project{
+			{Key: "XOPS"},
+			{Key: "ABC", Overrides: []config.RepoOverride{{Repo: "b", TargetSlug: "a"}}},
+		},
+	}
+	if _, err := BuildPlan(context.Background(), cfg, lister); err == nil || !strings.Contains(err.Error(), "explicit") {
+		t.Fatalf("expected explicit collision error, got %v", err)
 	}
 }
 
@@ -204,7 +247,8 @@ func TestBuildPlanFailsOnOverrideTargetCollision(t *testing.T) {
 		"ABC":  {mk("b")},
 	}}
 	cfg := &config.Config{
-		Source: config.Source{BaseURL: "https://bb.example.com"},
+		Source:  config.Source{BaseURL: "https://bb.example.com"},
+		Options: config.Options{OnSlugCollision: config.OnSlugCollisionFail},
 		Projects: []config.Project{
 			{Key: "XOPS"},
 			{Key: "ABC", Overrides: []config.RepoOverride{{Repo: "b", TargetSlug: "a"}}},

@@ -114,7 +114,7 @@ projects:
 options:
   workers: 3
   on_error: continue          # continue | stop
-  on_slug_collision: fail
+  on_slug_collision: auto    # auto | fail; auto renames colliding slugs
   rollback: true              # delete a Cloud repo if this run created it and it failed
   create_cloud_projects: true
 ```
@@ -161,9 +161,18 @@ projects:
 
 Overrides are validated at load time: `repo` must be non-empty and unique within
 the project, `destination` must be a valid Cloud project key, and (when the
-project lists `repos:`) the overridden repo must be one of them. Cloud repository
-slugs remain unique per workspace, so an override that collides with another
-target slug fails the plan.
+project lists `repos:`) the overridden repo must be one of them.
+
+Cloud repository slugs are unique per workspace, so two source repositories with
+the same slug (which Bitbucket Server allows, since it scopes slugs per project)
+cannot both keep that slug on Cloud. The `on_slug_collision` option controls this:
+
+- `auto` (default) — the colliding target slugs are prefixed with their source
+  project key, e.g. `XOPS/api` → `xops-api` and `ABC/api` → `abc-api`.
+- `fail` — the plan is rejected with a collision error.
+
+An explicit `target_slug` override always wins; if it collides with another base
+slug it is rejected so the plan stays unambiguous.
 
 You can also re-map from the TUI: open the **Migrate** view, highlight a
 repository, and press `e`. Edit the destination project and/or target slug and

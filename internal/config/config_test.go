@@ -207,6 +207,29 @@ func TestRepoOverrideInvalidDestinationRejected(t *testing.T) {
 	}
 }
 
+func TestSlugCollisionPolicy(t *testing.T) {
+	isolateEnv(t)
+
+	cfgPath := writeConfigWithProjects(t, "  - key: XOPS\n")
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Options.OnSlugCollision != OnSlugCollisionAuto {
+		t.Errorf("default on_slug_collision = %q, want %q", cfg.Options.OnSlugCollision, OnSlugCollisionAuto)
+	}
+
+	cfgPath = writeConfigWithProjects(t, "  - key: XOPS\noptions:\n  on_slug_collision: fail\n")
+	if _, err := Load(cfgPath); err != nil {
+		t.Fatalf("Load with fail policy: %v", err)
+	}
+
+	cfgPath = writeConfigWithProjects(t, "  - key: XOPS\noptions:\n  on_slug_collision: bogus\n")
+	if _, err := Load(cfgPath); err == nil {
+		t.Fatal("expected error for invalid on_slug_collision")
+	}
+}
+
 func TestSetRepoOverrideRoundTrip(t *testing.T) {
 	isolateEnv(t)
 	path := filepath.Join(t.TempDir(), "projects.yaml")

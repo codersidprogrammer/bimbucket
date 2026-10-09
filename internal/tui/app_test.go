@@ -108,8 +108,113 @@ func TestProjectsFilterNarrowsRows(t *testing.T) {
 	if m.projShown != 0 {
 		t.Errorf("filter %q shown = %d, want 0", "missing", m.projShown)
 	}
-	if out := m.viewProjects(); !strings.Contains(out, "no projects match") {
+	if out := m.viewProjects(); !strings.Contains(out, "no repositories match") {
 		t.Errorf("expected empty-state message:\n%s", out)
+	}
+}
+
+func keyRune(r rune) tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
+}
+
+func TestShortcutsAreCaseInsensitive(t *testing.T) {
+	m := &Model{
+		cfg:        &config.Config{},
+		state:      migrate.LoadState(filepath.Join(t.TempDir(), "state.json")),
+		projFilter: textinput.New(),
+		spinner:    spinner.New(),
+		width:      120,
+		height:     40,
+		mig:        migState{selected: map[string]bool{}, filter: textinput.New()},
+	}
+	m.plan = &migrate.Plan{Jobs: []migrate.RepoJob{
+		{Project: "XOPS", Slug: "svc", TargetSlug: "svc", CloudProject: "XOPS"},
+	}}
+	m.active = viewMigrate
+	m.rebuildMigTable()
+
+	if _, _ = m.handleKey(keyRune('E')); !m.mig.editing {
+		t.Fatal("uppercase E should open the remap editor")
+	}
+
+	m.mig.editing = false
+	m.active = viewProjects
+	before := m.projStatus
+	if _, _ = m.handleKey(keyRune('S')); m.projStatus == before {
+		t.Error("uppercase S should cycle the status filter")
+	}
+}
+
+func TestProjectsStatusFilter(t *testing.T) {
+	st := migrate.LoadState(filepath.Join(t.TempDir(), "state.json"))
+	st.Update(&migrate.Record{Project: "A", Slug: "a", Status: migrate.StatusDone})
+	st.Update(&migrate.Record{Project: "A", Slug: "b", Status: migrate.StatusFailed})
+
+	m := &Model{cfg: &config.Config{}, state: st, projFilter: textinput.New(), width: 120, height: 40}
+	m.plan = &migrate.Plan{Jobs: []migrate.RepoJob{
+		{Project: "A", Slug: "a", TargetSlug: "a"},
+		{Project: "A", Slug: "b", TargetSlug: "b"},
+		{Project: "A", Slug: "c", TargetSlug: "c"},
+	}}
+	m.rebuildProjects()
+	if m.projShown != 3 {
+		t.Fatalf("all shown = %d, want 3", m.projShown)
+	}
+
+	checks := []struct {
+		status statusFilter
+		want   int
+	}{
+		{projStatusMigrated, 1},
+		{projStatusPending, 1},
+		{projStatusFailed, 1},
+		{projStatusAll, 3},
+	}
+	for _, c := range checks {
+		m.cycleStatusFilter()
+		if m.projStatus != c.status {
+			t.Fatalf("status = %v, want %v", m.projStatus, c.status)
+		}
+		if m.projShown != c.want {
+			t.Errorf("status %s shown = %d, want %d", c.status.label(), m.projShown, c.want)
+		}
+	}
+
+	if out := m.viewProjects(); !strings.Contains(out, "status: all") {
+		t.Errorf("footer missing status filter label:\n%s", out)
+	}
+}
+
+func TestMigrateTableShowsStatus(t *testing.T) {
+	st := migrate.LoadState(filepath.Join(t.TempDir(), "state.json"))
+	st.Update(&migrate.Record{Project: "A", Slug: "a", Status: migrate.StatusDone})
+	st.Update(&migrate.Record{Project: "A", Slug: "b", Status: migrate.StatusFailed})
+
+	m := &Model{
+		cfg:        &config.Config{},
+		state:      st,
+		projFilter: textinput.New(),
+		spinner:    spinner.New(),
+		width:      120,
+		height:     40,
+		mig:        migState{selected: map[string]bool{}, filter: textinput.New()},
+	}
+	m.plan = &migrate.Plan{Jobs: []migrate.RepoJob{
+		{Project: "A", Slug: "a", TargetSlug: "a"},
+		{Project: "A", Slug: "b", TargetSlug: "b"},
+		{Project: "A", Slug: "c", TargetSlug: "c"},
+	}}
+	m.rebuildMigTable()
+
+	rows := m.mig.table.Rows()
+	want := []string{"migrated", "failed", "not migrated"}
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %d, want %d", len(rows), len(want))
+	}
+	for i, w := range want {
+		if rows[i][3] != w {
+			t.Errorf("row %d status = %q, want %q (row %v)", i, rows[i][3], w, rows[i])
+		}
 	}
 }
 

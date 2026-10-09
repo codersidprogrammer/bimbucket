@@ -153,6 +153,7 @@ type Model struct {
 	projFilter    textinput.Model
 	projFiltering bool
 	projShown     int
+	projStatus    statusFilter
 
 	destExists   map[string]bool
 	destErr      error
@@ -284,6 +285,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mig.log.Close()
 		}
 		m.destExists = nil
+		m.rebuildMigTable()
 		m.rebuildProjects()
 		m.rebuildStatus()
 		return m, m.checkDestinationsCmd()
@@ -316,6 +318,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// lowerKey folds a single upper-case letter rune to lower case, so single-letter
+// shortcuts match regardless of Caps Lock or a held Shift.
+func lowerKey(msg tea.KeyMsg) tea.KeyMsg {
+	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
+		if r := msg.Runes[0]; r >= 'A' && r <= 'Z' {
+			msg.Runes = []rune{r + ('a' - 'A')}
+		}
+	}
+	return msg
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -374,6 +387,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// Fold a lone letter to lower case so shortcuts work with Caps Lock on or
+	// Shift held (e.g. "E" still opens the remap editor). The text-entry
+	// contexts above received the raw key, so typed case is preserved there.
+	msg = lowerKey(msg)
+
 	switch msg.String() {
 	case "q":
 		if m.mig.phase != migRunning {
@@ -428,8 +446,12 @@ func (m *Model) onEnterView() tea.Cmd {
 func (m *Model) handleViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.active {
 	case viewProjects:
-		if msg.String() == "r" {
+		switch msg.String() {
+		case "r":
 			return m, m.refreshAll()
+		case "s":
+			m.cycleStatusFilter()
+			return m, nil
 		}
 		var cmd tea.Cmd
 		m.projTable, cmd = m.projTable.Update(msg)
@@ -654,7 +676,7 @@ func (m *Model) tabBar() string {
 func (m *Model) helpLine() string {
 	switch m.active {
 	case viewProjects:
-		return helpStyle.Render("  ↑/↓ scroll   / filter   r refresh   tab/1-7 switch view   q quit")
+		return helpStyle.Render("  ↑/↓ scroll   / filter   s status   r refresh   tab/1-7 switch view   q quit")
 	case viewConnection:
 		return helpStyle.Render("  r re-check   tab/1-7 switch view   q quit")
 	case viewHistory:

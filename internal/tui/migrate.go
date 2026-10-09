@@ -31,13 +31,14 @@ func (m *Model) rebuildMigTable() {
 	}
 	m.mig.jobs = jobs
 
-	flex := m.fillWidth(4 + 16 + 18 + 12)
+	flex := m.fillWidth(4 + 16 + 13 + 18 + 12)
 	repoW := flex / 2
 	targetW := flex - repoW
 	cols := []table.Column{
 		{Title: "Sel", Width: 4},
 		{Title: "Project", Width: 16},
 		{Title: "Repo", Width: repoW},
+		{Title: "Status", Width: 13},
 		{Title: "Dest", Width: 18},
 		{Title: "Target slug", Width: targetW},
 		{Title: "Default", Width: 12},
@@ -65,7 +66,8 @@ func (m *Model) migRows() []table.Row {
 				dest += " *"
 			}
 		}
-		rows = append(rows, table.Row{mark, j.Project, j.Slug, dest, j.TargetSlug, j.DefaultBranch})
+		status := repoStatus(m.state.Get(j.Project, j.Slug))
+		rows = append(rows, table.Row{mark, j.Project, j.Slug, status, dest, j.TargetSlug, j.DefaultBranch})
 	}
 	return rows
 }
@@ -93,9 +95,20 @@ func (m *Model) jobByKey(k string) *migrate.RepoJob {
 	return nil
 }
 
-// applyRemaps recomputes every job's destination from the in-memory config. It
-// is idempotent, so it can be re-run after a config change or plan reload.
+// applyRemaps recomputes every job's destination from the in-memory config,
+// then reapplies the slug-collision policy. It is idempotent, so it can be
+// re-run after a config change or plan reload.
 func (m *Model) applyRemaps() {
+	m.resolveBase()
+	if m.plan == nil {
+		return
+	}
+	_ = migrate.ApplySlugPolicy(m.plan.Jobs, m.cfg)
+}
+
+// resolveBase recomputes every job's destination from the in-memory config,
+// without applying the collision policy (so the base slugs can be inspected).
+func (m *Model) resolveBase() {
 	if m.plan == nil {
 		return
 	}
@@ -291,14 +304,15 @@ func (m *Model) commitRemap() (tea.Model, tea.Cmd) {
 	}
 	prev, had := p.OverrideFor(j.Slug)
 
-	// Apply in memory first and reject a mapping that collides with another
-	// target slug before touching the file.
+	// Apply in memory first and reject an explicit target slug that collides
+	// with another repository before touching the file. Inherited slugs are
+	// disambiguated by the collision policy instead.
 	m.cfg.SetOverride(j.Project, j.Slug, dest, slug)
-	m.applyRemaps()
-	if cerr := migrate.CheckCollisions(m.plan.Jobs); cerr != nil {
+	m.resolveBase()
+	if perr := migrate.ApplySlugPolicy(m.plan.Jobs, m.cfg); perr != nil {
 		m.restoreOverride(j.Project, j.Slug, prev, had)
 		m.applyRemaps()
-		m.mig.editErr = cerr.Error()
+		m.mig.editErr = perr.Error()
 		return m, nil
 	}
 
@@ -309,6 +323,7 @@ func (m *Model) commitRemap() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	m.applyRemaps()
 	m.closeRemap()
 	m.rebuildMigTable()
 	m.rebuildProjects()

@@ -75,7 +75,7 @@ func BuildPlan(ctx context.Context, cfg *config.Config, lister RepoLister) (*Pla
 		return jobs[i].Slug < jobs[j].Slug
 	})
 
-	if err := detectCollisions(jobs); err != nil {
+	if err := ApplySlugPolicy(jobs, cfg); err != nil {
 		return nil, err
 	}
 	return &Plan{Jobs: jobs}, nil
@@ -134,9 +134,101 @@ func ResolveJob(p config.Project, sourceSlug string) (cloudProject, targetSlug s
 	return cloudProject, targetSlug
 }
 
-// CheckCollisions reports a workspace-wide target slug collision across jobs.
-// The TUI calls it after applying an in-session remap.
-func CheckCollisions(jobs []RepoJob) error { return detectCollisions(jobs) }
+// ApplySlugPolicy enforces workspace-wide target slug uniqueness across jobs.
+// Cloud repository slugs are unique per workspace, so collisions are resolved
+// per options.on_slug_collision (an empty policy means the default, "auto").
+//
+// A target slug set explicitly by an override is authoritative: a collision
+// that involves any explicit slug is rejected under either policy (renaming a
+// user's chosen name would be surprising). Under "auto" the remaining
+// duplicate slugs -- all derived from source slugs -- are prefixed with their
+// source project key; under "fail" any collision is reported as an error.
+func ApplySlugPolicy(jobs []RepoJob, cfg *config.Config) error {
+	explicit := explicitSlugs(jobs, cfg)
+	if err := detectExplicitCollisions(jobs, explicit); err != nil {
+		return err
+	}
+
+	policy := cfg.Options.OnSlugCollision
+	if policy == "" {
+		policy = config.OnSlugCollisionAuto
+	}
+	if policy == config.OnSlugCollisionAuto {
+		autoRenameCollisions(jobs, explicit)
+	}
+	return detectCollisions(jobs)
+}
+
+// explicitSlugs marks the jobs whose target slug came from an explicit
+// target_slug override (rather than the normalized source slug).
+func explicitSlugs(jobs []RepoJob, cfg *config.Config) map[int]bool {
+	explicit := make(map[int]bool)
+	for i, j := range jobs {
+		if p, ok := cfg.ProjectByKey(j.Project); ok {
+			if ov, ok := p.OverrideFor(j.Slug); ok && ov.TargetSlug != "" {
+				explicit[i] = true
+			}
+		}
+	}
+	return explicit
+}
+
+// detectExplicitCollisions reports any target slug shared by two jobs where at
+// least one of them is an explicit override.
+func detectExplicitCollisions(jobs []RepoJob, explicit map[int]bool) error {
+	sources := make(map[string][]string, len(jobs))
+	explicitSlug := make(map[string]bool, len(jobs))
+	for i, j := range jobs {
+		sources[j.TargetSlug] = append(sources[j.TargetSlug], j.Project+"/"+j.Slug)
+		if explicit[i] {
+			explicitSlug[j.TargetSlug] = true
+		}
+	}
+	var collisions []string
+	for slug, srcs := range sources {
+		if len(srcs) > 1 && explicitSlug[slug] {
+			sort.Strings(srcs)
+			collisions = append(collisions, fmt.Sprintf("%s <- %s", slug, strings.Join(srcs, ", ")))
+		}
+	}
+	if len(collisions) == 0 {
+		return nil
+	}
+	sort.Strings(collisions)
+	return fmt.Errorf("explicit target_slug collision(s); Cloud repository slugs are unique per workspace:\n  %s", strings.Join(collisions, "\n  "))
+}
+
+// autoRenameCollisions prefixes every duplicated (non-explicit) target slug
+// with its source project key. Because a source project key plus repo slug is
+// unique, the result is unique too; the loop guards against a prefix itself
+// introducing a new clash. Explicit slugs are never renamed.
+func autoRenameCollisions(jobs []RepoJob, explicit map[int]bool) {
+	for i := 0; i <= len(jobs); i++ {
+		counts := make(map[string]int, len(jobs))
+		for _, j := range jobs {
+			counts[j.TargetSlug]++
+		}
+		renamed := false
+		for k := range jobs {
+			if counts[jobs[k].TargetSlug] > 1 && !explicit[k] {
+				jobs[k].TargetSlug = slugToken(jobs[k].Project) + "-" + jobs[k].TargetSlug
+				renamed = true
+			}
+		}
+		if !renamed {
+			return
+		}
+	}
+}
+
+// slugToken derives a Cloud-slug-safe token from a source project key.
+func slugToken(project string) string {
+	tok := strings.ToLower(normalizeProjectKey(project))
+	if tok == "" {
+		return "proj"
+	}
+	return tok
+}
 
 // normalizeProjectKey upper-cases a Server project key and strips a leading
 // tilde used for personal projects, which Cloud project keys do not allow.

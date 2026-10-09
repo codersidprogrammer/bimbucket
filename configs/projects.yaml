@@ -30,6 +30,6 @@ options:
   workers: 3
   temp_dir: "" # empty => OS temp dir; deleted per repository
   on_error: continue # continue | stop
-  on_slug_collision: fail # only "fail" is supported
+  on_slug_collision: auto # auto | fail; auto prefixes colliding slugs with the source project key
   rollback: true # delete Cloud repo if this run created it and it failed
   create_cloud_projects: true # create a Cloud project per Server project key

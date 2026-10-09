@@ -103,6 +103,13 @@ func (c *Config) SetOverride(projectKey, repoSlug, destination, targetSlug strin
 const (
 	OnErrorContinue = "continue"
 	OnErrorStop     = "stop"
+
+	// OnSlugCollisionAuto renames colliding Cloud repository slugs (prefixing
+	// them with the source project key) so every target slug stays unique.
+	OnSlugCollisionAuto = "auto"
+	// OnSlugCollisionFail aborts planning on the first workspace-wide slug
+	// collision instead of renaming.
+	OnSlugCollisionFail = "fail"
 )
 
 // Load reads config from path and, when present, credentials from ./.env.
@@ -161,7 +168,7 @@ func (c *Config) applyDefaults() {
 		c.Options.OnError = OnErrorContinue
 	}
 	if c.Options.OnSlugCollision == "" {
-		c.Options.OnSlugCollision = "fail"
+		c.Options.OnSlugCollision = OnSlugCollisionAuto
 	}
 }
 
@@ -226,8 +233,10 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("options.on_error must be %q or %q", OnErrorContinue, OnErrorStop)
 	}
-	if c.Options.OnSlugCollision != "fail" {
-		return fmt.Errorf("options.on_slug_collision: only \"fail\" is supported")
+	switch c.Options.OnSlugCollision {
+	case OnSlugCollisionAuto, OnSlugCollisionFail:
+	default:
+		return fmt.Errorf("options.on_slug_collision must be %q or %q", OnSlugCollisionAuto, OnSlugCollisionFail)
 	}
 	if c.Options.Workers < 1 {
 		return fmt.Errorf("options.workers must be >= 1")

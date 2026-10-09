@@ -36,6 +36,50 @@ func (m *Model) fillWidth(fixed int) int {
 	return w
 }
 
+// statusFilter narrows the Projects view by migration state. It is independent
+// of the free-text filter, so both apply together.
+type statusFilter int
+
+const (
+	projStatusAll statusFilter = iota
+	projStatusMigrated
+	projStatusPending
+	projStatusFailed
+	statusFilterCount
+)
+
+func (s statusFilter) label() string {
+	switch s {
+	case projStatusMigrated:
+		return "migrated"
+	case projStatusPending:
+		return "not migrated"
+	case projStatusFailed:
+		return "failed"
+	default:
+		return "all"
+	}
+}
+
+func (s statusFilter) matches(rec *migrate.Record) bool {
+	switch s {
+	case projStatusMigrated:
+		return isMigrated(rec)
+	case projStatusPending:
+		return isPending(rec)
+	case projStatusFailed:
+		return isFailed(rec)
+	default:
+		return true
+	}
+}
+
+// cycleStatusFilter advances to the next status filter and rebuilds the table.
+func (m *Model) cycleStatusFilter() {
+	m.projStatus = (m.projStatus + 1) % statusFilterCount
+	m.rebuildProjects()
+}
+
 func (m *Model) rebuildProjects() {
 	if m.plan == nil {
 		return
@@ -59,6 +103,9 @@ func (m *Model) rebuildProjects() {
 			continue
 		}
 		rec := m.state.Get(j.Project, j.Slug)
+		if !m.projStatus.matches(rec) {
+			continue
+		}
 		rows = append(rows, table.Row{j.Project, m.destLabel(j.CloudProject), j.Slug, j.TargetSlug, repoStatus(rec), updatedAt(rec)})
 	}
 	m.projShown = len(rows)
@@ -129,17 +176,33 @@ func (m *Model) viewProjects() string {
 	b.WriteString(m.projFilter.View())
 	b.WriteString("\n")
 	if m.projShown == 0 {
-		b.WriteString(mutedStyle.Render("  no projects match " + strconv.Quote(m.projFilter.Value())))
+		b.WriteString(mutedStyle.Render("  no repositories match " + m.projFilterDesc()))
 	} else {
 		b.WriteString(m.projTable.View())
 	}
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  showing: %s / %d   migrated: %s   not migrated: %s   failed: %s",
+	b.WriteString(fmt.Sprintf("  showing: %s / %d   migrated: %s   not migrated: %s   failed: %s   status: %s",
 		goodStyle.Render(fmt.Sprint(m.projShown)),
 		len(m.plan.Jobs),
 		goodStyle.Render(fmt.Sprint(migrated)),
 		warnStyle.Render(fmt.Sprint(pending)),
 		badStyle.Render(fmt.Sprint(failed)),
+		warnStyle.Render(m.projStatus.label()),
 	))
 	return b.String()
+}
+
+// projFilterDesc describes the active Projects filters for the empty state.
+func (m *Model) projFilterDesc() string {
+	var parts []string
+	if q := strings.TrimSpace(m.projFilter.Value()); q != "" {
+		parts = append(parts, strconv.Quote(q))
+	}
+	if m.projStatus != projStatusAll {
+		parts = append(parts, "status "+m.projStatus.label())
+	}
+	if len(parts) == 0 {
+		return "the current filter"
+	}
+	return strings.Join(parts, " + ")
 }
