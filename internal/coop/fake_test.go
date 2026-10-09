@@ -56,13 +56,15 @@ func (f *fakeDB) handle(w http.ResponseWriter, r *http.Request) {
 func (f *fakeDB) get(w http.ResponseWriter, p string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if e, ok := f.etags[p]; ok {
-		w.Header().Set("ETag", strconv.Itoa(e))
-	}
 	if v, ok := f.data[p]; ok {
+		if e, ok := f.etags[p]; ok {
+			w.Header().Set("ETag", strconv.Itoa(e))
+		}
 		io.WriteString(w, v)
 		return
 	}
+	// Absent (null) location: mirror Firebase's null sentinel ETag.
+	w.Header().Set("ETag", nullETag)
 	// Gather one level of children under the prefix.
 	prefix := p + "/"
 	out := map[string]json.RawMessage{}
@@ -84,12 +86,20 @@ func (f *fakeDB) put(w http.ResponseWriter, r *http.Request, p string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch match := r.Header.Get("if-match"); match {
-	case "*":
+	case "":
+		// unconditional
+	case nullETag:
+		// Create-only: succeed only while the location is still empty.
 		if _, ok := f.data[p]; ok {
 			w.WriteHeader(http.StatusPreconditionFailed)
 			return
 		}
-	case "":
+	case "*":
+		// HTTP If-Match: * succeeds only if the resource already exists.
+		if _, ok := f.data[p]; !ok {
+			w.WriteHeader(http.StatusPreconditionFailed)
+			return
+		}
 	default:
 		if strconv.Itoa(f.etags[p]) != match {
 			w.WriteHeader(http.StatusPreconditionFailed)

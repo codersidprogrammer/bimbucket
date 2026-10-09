@@ -20,6 +20,12 @@ var ErrNotFound = errors.New("coop: path not found")
 // because the value changed since it was read.
 var ErrPrecondition = errors.New("coop: precondition failed")
 
+// nullETag is the Firebase sentinel ETag for a null (absent) location. Sending
+// it in an if-match header makes the write succeed only while the location is
+// still empty, which is how a fresh lease is created atomically. Firebase does
+// NOT treat "*" as create-only (that is the plain HTTP "resource exists" rule).
+const nullETag = "null_etag"
+
 // Client is a minimal Firebase Realtime Database REST client. It speaks the
 // documented REST surface (`.json` paths, optional `auth` query, ETag
 // conditional writes) and the text/event-stream change feed. It deliberately
@@ -93,7 +99,7 @@ func (c *Client) get(ctx context.Context, path, rawQuery string, hdr map[string]
 		return "", nil, httpError(resp, body)
 	}
 	if isNull(body) {
-		return resp.Header.Get("ETag"), nil, ErrNotFound
+		return nullETag, nil, ErrNotFound
 	}
 	return resp.Header.Get("ETag"), body, nil
 }
@@ -122,9 +128,9 @@ func (c *Client) Put(ctx context.Context, path string, v any) error {
 	return c.put(ctx, c.endpoint(path, ""), body, "")
 }
 
-// PutIfMatch writes v at path only if the current ETag still matches. Pass "*"
-// to require that the path does not exist yet (create-only). A stale ETag
-// yields ErrPrecondition.
+// PutIfMatch writes v at path only if the current ETag still matches. Pass
+// nullETag (as returned by a read of an absent location) to require that the
+// path still be empty (create-only). A stale ETag yields ErrPrecondition.
 func (c *Client) PutIfMatch(ctx context.Context, path string, v any, etag string) error {
 	body, err := json.Marshal(v)
 	if err != nil {

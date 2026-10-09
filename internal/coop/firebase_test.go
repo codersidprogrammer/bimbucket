@@ -34,11 +34,16 @@ func TestClientETagConditions(t *testing.T) {
 	c := NewClient(srv.URL, "")
 	ctx := context.Background()
 
+	// A read of an absent location reports the null sentinel ETag.
+	if etag, err := c.getETag(ctx, "rooms/x/lease", nil); !errors.Is(err, ErrNotFound) || etag != nullETag {
+		t.Fatalf("absent getETag = %q, %v; want %q, ErrNotFound", etag, err, nullETag)
+	}
+
 	// Create-only write succeeds when absent, fails when present.
-	if err := c.PutIfMatch(ctx, "rooms/x/lease", map[string]int{"n": 1}, "*"); err != nil {
+	if err := c.PutIfMatch(ctx, "rooms/x/lease", map[string]int{"n": 1}, nullETag); err != nil {
 		t.Fatalf("create-only: %v", err)
 	}
-	if err := c.PutIfMatch(ctx, "rooms/x/lease", map[string]int{"n": 2}, "*"); !errors.Is(err, ErrPrecondition) {
+	if err := c.PutIfMatch(ctx, "rooms/x/lease", map[string]int{"n": 2}, nullETag); !errors.Is(err, ErrPrecondition) {
 		t.Errorf("second create-only err = %v, want ErrPrecondition", err)
 	}
 

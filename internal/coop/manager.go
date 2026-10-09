@@ -586,13 +586,15 @@ func (m *Manager) AcquireLease(ctx context.Context, runID string) error {
 
 	var lease Lease
 	etag, err := m.client.getETag(ctx, leasePath, &lease)
-	createOnly := false
 	if errors.Is(err, ErrNotFound) {
-		createOnly = true
+		// Absent lease: getETag returns nullETag, so the write below is
+		// create-only and exactly one device can win.
 	} else if err != nil {
 		return err
+	} else if etag == "" {
+		return errors.New("coop: run lease read returned no ETag")
 	}
-	if !createOnly && lease.Active && lease.Device != device && leaseFresh(lease) {
+	if lease.Active && lease.Device != device && leaseFresh(lease) {
 		return fmt.Errorf("coop: migration already running on %q", lease.Owner)
 	}
 
@@ -604,11 +606,7 @@ func (m *Manager) AcquireLease(ctx context.Context, runID string) error {
 		Heartbeat: time.Now().UTC().Unix(),
 		Active:    true,
 	}
-	match := etag
-	if createOnly || match == "" {
-		match = "*"
-	}
-	if err := m.client.PutIfMatch(ctx, leasePath, mine, match); err != nil {
+	if err := m.client.PutIfMatch(ctx, leasePath, mine, etag); err != nil {
 		if errors.Is(err, ErrPrecondition) {
 			return errors.New("coop: another device started a run just now; retry")
 		}
