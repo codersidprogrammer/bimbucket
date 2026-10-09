@@ -791,12 +791,27 @@ func (m *Model) View() string {
 
 	tab := m.tabBar()
 	if e := m.coopError(); e != "" {
-		tab += "\n" + badStyle.Render(" ! co-op: "+e)
+		tab += "\n" + badStyle.Render(" ! co-op: "+strings.TrimPrefix(e, "coop: "))
 	}
 	if m.sideW > 0 {
-		return tab + "\n" + joinColumns(b.String(), m.viewSidebar(), m.mainWidth())
+		return clampHeight(tab+"\n"+joinColumns(b.String(), m.viewSidebar(), m.mainWidth()), m.height)
 	}
-	return tab + "\n" + b.String()
+	return clampHeight(tab+"\n"+b.String(), m.height)
+}
+
+// clampHeight keeps at most max lines, discarding overflow from the bottom.
+// Bubble Tea drops lines from the TOP when a frame is taller than the terminal
+// (standard_renderer.go), which hides the tab bar; clamping here guarantees the
+// tab bar stays visible.
+func clampHeight(s string, max int) string {
+	if max <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= max {
+		return s
+	}
+	return strings.Join(lines[:max], "\n")
 }
 
 // coopError returns a co-op error to surface globally, or "" when healthy.

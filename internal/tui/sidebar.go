@@ -39,7 +39,9 @@ func (m *Model) layoutSidebar() {
 		h = 6
 	}
 	m.chat.Width = sidebarWidth - 3
-	m.chat.Height = h - 4
+	// Leave room for the head, the input, and one spare row for a status or
+	// error line so the sidebar never becomes the tallest column.
+	m.chat.Height = h - 5
 	m.chatInput.Width = sidebarWidth - 5
 	m.rebuildSidebar()
 }
@@ -80,7 +82,10 @@ func (m *Model) viewSidebar() string {
 	b.WriteString(m.chat.View() + "\n")
 	b.WriteString(m.chatInput.View())
 	if m.coopMsg != "" {
-		b.WriteString("\n" + badStyle.Render(" ! "+m.coopMsg))
+		// Truncate to a single line so a long error cannot grow the sidebar
+		// past its height budget and push the tab bar off-screen.
+		msg := badStyle.Render(" ! " + m.coopMsg)
+		b.WriteString("\n" + lipgloss.NewStyle().MaxWidth(sidebarWidth-5).MaxHeight(1).Render(msg))
 	}
 	return lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), false, false, false, true).

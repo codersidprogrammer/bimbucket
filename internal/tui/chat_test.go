@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -86,5 +87,53 @@ func TestWaitForCoopDelivers(t *testing.T) {
 	ch <- struct{}{}
 	if _, ok := cmd().(coopUpdateMsg); !ok {
 		t.Fatal("waitForCoop did not yield a coopUpdateMsg")
+	}
+}
+
+// TestFrameHeightFitsTerminal guards the reported bug where a busy chat (and a
+// co-op error) grew the composed view past the terminal height; Bubble Tea then
+// drops lines from the top, hiding the tab bar.
+func TestFrameHeightFitsTerminal(t *testing.T) {
+	srv := fakeRTDB(t)
+	defer srv.Close()
+
+	m := &Model{
+		cfg:       &config.Config{Options: config.Options{Workers: 3}},
+		state:     migrate.LoadState(filepath.Join(t.TempDir(), "state.json")),
+		logDir:    t.TempDir(),
+		statePath: filepath.Join(t.TempDir(), "state.json"),
+		spinner:   spinner.New(),
+		coop:      coop.New(srv.URL, "", "me", migrate.LoadState(filepath.Join(t.TempDir(), "state.json"))),
+		chatInput: textinput.New(),
+		mig:       migState{selected: map[string]bool{}, filter: textinput.New()},
+	}
+	if _, err := m.coop.Host(context.Background(), "team", "alice", "pw", nil); err != nil {
+		t.Fatalf("host: %v", err)
+	}
+	defer m.coop.Close()
+
+	m.plan = &migrate.Plan{}
+	m.rebuildConfig()
+	m.width, m.height = 120, 30
+	m.resize()
+
+	long := strings.Repeat("crowded chat line that should wrap ", 12)
+	for i := 0; i < 80; i++ {
+		_ = m.coop.SendChat(long)
+	}
+	// The reported trigger: a busy chat plus a co-op error banner and a sidebar
+	// status line. Previously the frame grew to height+1 and Bubble Tea dropped
+	// the top row (the tab bar).
+	m.coopErr = "coop: another device started a run just now; retry"
+	m.coopMsg = "another device started a run just now; retry"
+	m.rebuildSidebar()
+
+	out := m.View()
+	lines := strings.Split(out, "\n")
+	if len(lines) > m.height {
+		t.Fatalf("frame has %d lines, terminal height %d: tab bar would be clipped", len(lines), m.height)
+	}
+	if !strings.Contains(lines[0], viewNames[0]) {
+		t.Errorf("first line is not the tab bar: %q", lines[0])
 	}
 }
